@@ -48,6 +48,7 @@ class CacheKeySet(ABC):
 
 class Unhashable:
     def __init__(self):
+        """Create a hashable sentinel value for unhashable prompt inputs."""
         self.value = float("NaN")
 
 
@@ -186,6 +187,7 @@ class CacheKeySetInputSignature(CacheKeySet):
         return to_hashable(signature)
 
     async def get_immediate_node_signature(self, dynprompt, node_id, ancestor_order_mapping):
+        """Build the cache-signature fragment for a node's immediate inputs."""
         if not dynprompt.has_node(node_id):
             # This node doesn't exist -- we can't cache it.
             return [float("NaN")]
