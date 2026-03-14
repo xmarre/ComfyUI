@@ -2,6 +2,7 @@ from comfy_execution.caching import Unhashable, to_hashable
 
 
 def test_to_hashable_returns_unhashable_for_cyclic_builtin_containers():
+    """Ensure self-referential built-in containers terminate as Unhashable."""
     cyclic_list = []
     cyclic_list.append(cyclic_list)
 
@@ -13,6 +14,7 @@ def test_to_hashable_returns_unhashable_for_cyclic_builtin_containers():
 
 
 def test_to_hashable_returns_unhashable_when_max_depth_is_reached():
+    """Ensure deeply nested built-in containers stop at the configured depth limit."""
     nested = current = []
     for _ in range(32):
         next_item = []
