@@ -10,7 +10,7 @@ def is_link(obj):
         return False
     if type(obj[0]) is not str:
         return False
-    if type(obj[1]) not in (int, float):
+    if type(obj[1]) is not int:
         return False
     return True
 
