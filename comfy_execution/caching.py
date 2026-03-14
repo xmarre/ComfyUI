@@ -47,13 +47,14 @@ class CacheKeySet(ABC):
         return self.subcache_keys.get(node_id, None)
 
 class Unhashable:
+    """Hashable sentinel for values that cannot be represented safely in cache keys."""
     def __init__(self):
-        """Create a hashable sentinel value for unhashable prompt inputs."""
+        """Initialize a sentinel that stays hashable while never comparing equal."""
         self.value = float("NaN")
 
 
 def _sanitized_sort_key(obj, depth=0, max_depth=32):
-    """Build a deterministic sort key from sanitized built-in container content."""
+    """Return a deterministic ordering key for sanitized built-in container content."""
     if depth >= max_depth:
         return ("MAX_DEPTH",)
 
@@ -85,7 +86,10 @@ def _sanitized_sort_key(obj, depth=0, max_depth=32):
 
 
 def _sanitize_signature_input(obj, depth=0, max_depth=32):
-    """Sanitize prompt-signature inputs without recursing into opaque runtime objects."""
+    """Normalize signature inputs to safe built-in containers.
+
+    Preserves built-in container type and replaces opaque runtime values with Unhashable().
+    """
     if depth >= max_depth:
         return Unhashable()
 
@@ -123,7 +127,10 @@ def _sanitize_signature_input(obj, depth=0, max_depth=32):
         return Unhashable()
 
 def to_hashable(obj, depth=0, max_depth=32, seen=None):
-    """Convert prompt-safe built-in values into a stable hashable representation."""
+    """Convert sanitized prompt inputs into a stable hashable representation.
+
+    Preserves built-in container type and stops safely on cycles or excessive depth.
+    """
     if depth >= max_depth:
         return Unhashable()
 
@@ -182,6 +189,7 @@ class CacheKeySetID(CacheKeySet):
             self.subcache_keys[node_id] = (node_id, node["class_type"])
 
 class CacheKeySetInputSignature(CacheKeySet):
+    """Cache-key strategy that hashes a node's immediate inputs plus ancestor references."""
     def __init__(self, dynprompt, node_ids, is_changed_cache):
         super().__init__(dynprompt, node_ids, is_changed_cache)
         self.dynprompt = dynprompt
@@ -201,6 +209,7 @@ class CacheKeySetInputSignature(CacheKeySet):
             self.subcache_keys[node_id] = (node_id, node["class_type"])
 
     async def get_node_signature(self, dynprompt, node_id):
+        """Build the full cache signature for a node and its ordered ancestors."""
         signature = []
         ancestors, order_mapping = self.get_ordered_ancestry(dynprompt, node_id)
         signature.append(await self.get_immediate_node_signature(dynprompt, node_id, order_mapping))
@@ -209,7 +218,10 @@ class CacheKeySetInputSignature(CacheKeySet):
         return to_hashable(signature)
 
     async def get_immediate_node_signature(self, dynprompt, node_id, ancestor_order_mapping):
-        """Build the cache-signature fragment for a node's immediate inputs."""
+        """Build the cache-signature fragment for a node's immediate inputs.
+
+        Link inputs are reduced to ancestor references, while raw values are sanitized first.
+        """
         if not dynprompt.has_node(node_id):
             # This node doesn't exist -- we can't cache it.
             return [float("NaN")]
