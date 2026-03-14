@@ -1,4 +1,5 @@
 def is_link(obj):
+    """Return True if obj is a plain prompt link of the form [node_id, output_index]."""
     # Prompt links produced by the frontend / GraphBuilder are plain Python
     # lists in the form [node_id, output_index]. Some custom-node paths can
     # inject foreign runtime objects into prompt inputs during on-prompt graph

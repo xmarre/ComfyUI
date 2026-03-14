@@ -52,6 +52,7 @@ class Unhashable:
 
 
 def _sanitized_sort_key(obj, depth=0, max_depth=32):
+    """Build a deterministic sort key from sanitized built-in container content."""
     if depth >= max_depth:
         return ("MAX_DEPTH",)
 
@@ -83,6 +84,7 @@ def _sanitized_sort_key(obj, depth=0, max_depth=32):
 
 
 def _sanitize_signature_input(obj, depth=0, max_depth=32):
+    """Sanitize prompt-signature inputs without recursing into opaque runtime objects."""
     if depth >= max_depth:
         return Unhashable()
 
@@ -120,6 +122,7 @@ def _sanitize_signature_input(obj, depth=0, max_depth=32):
         return Unhashable()
 
 def to_hashable(obj):
+    """Convert prompt-safe built-in values into a stable hashable representation."""
     # Restrict recursion to plain built-in containers. Some custom nodes insert
     # runtime objects into prompt inputs for dynamic graph paths; walking those
     # objects as generic Mappings / Sequences is unsafe and can destabilize the
