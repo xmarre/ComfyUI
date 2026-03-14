@@ -47,8 +47,6 @@ class CacheKeySet(ABC):
         return self.subcache_keys.get(node_id, None)
 
 class Unhashable:
-    """Hashable sentinel used when an input cannot be safely represented."""
-
     def __init__(self):
         """Create a hashable sentinel value for unhashable prompt inputs."""
         self.value = float("NaN")
