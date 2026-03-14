@@ -56,10 +56,8 @@ class CacheKeySet(ABC):
         return self.subcache_keys.get(node_id, None)
 
 class Unhashable:
-    """Hashable sentinel for values that cannot be represented safely in cache keys."""
-    def __init__(self):
-        """Initialize a sentinel that stays hashable while never comparing equal."""
-        self.value = float("NaN")
+    """Hashable identity sentinel for values that cannot be represented safely in cache keys."""
+    pass
 
 
 def _sanitized_sort_key(obj, depth=0, max_depth=32):
