@@ -122,8 +122,14 @@ def _sanitize_signature_input(obj, depth=0, max_depth=32):
         # the foreign object and risk crashing on custom container semantics.
         return Unhashable()
 
-def to_hashable(obj):
+def to_hashable(obj, depth=0, max_depth=32, seen=None):
     """Convert prompt-safe built-in values into a stable hashable representation."""
+    if depth >= max_depth:
+        return Unhashable()
+
+    if seen is None:
+        seen = set()
+
     # Restrict recursion to plain built-in containers. Some custom nodes insert
     # runtime objects into prompt inputs for dynamic graph paths; walking those
     # objects as generic Mappings / Sequences is unsafe and can destabilize the
@@ -131,16 +137,32 @@ def to_hashable(obj):
     obj_type = type(obj)
     if obj_type in (int, float, str, bool, bytes, type(None)):
         return obj
-    elif obj_type is dict:
-        return ("dict", frozenset((to_hashable(k), to_hashable(v)) for k, v in obj.items()))
+
+    if obj_type in (dict, list, tuple, set, frozenset):
+        obj_id = id(obj)
+        if obj_id in seen:
+            return Unhashable()
+        seen = seen | {obj_id}
+
+    if obj_type is dict:
+        return (
+            "dict",
+            frozenset(
+                (
+                    to_hashable(k, depth + 1, max_depth, seen),
+                    to_hashable(v, depth + 1, max_depth, seen),
+                )
+                for k, v in obj.items()
+            ),
+        )
     elif obj_type is list:
-        return ("list", tuple(to_hashable(i) for i in obj))
+        return ("list", tuple(to_hashable(i, depth + 1, max_depth, seen) for i in obj))
     elif obj_type is tuple:
-        return ("tuple", tuple(to_hashable(i) for i in obj))
+        return ("tuple", tuple(to_hashable(i, depth + 1, max_depth, seen) for i in obj))
     elif obj_type is set:
-        return ("set", frozenset(to_hashable(i) for i in obj))
+        return ("set", frozenset(to_hashable(i, depth + 1, max_depth, seen) for i in obj))
     elif obj_type is frozenset:
-        return ("frozenset", frozenset(to_hashable(i) for i in obj))
+        return ("frozenset", frozenset(to_hashable(i, depth + 1, max_depth, seen) for i in obj))
     else:
         return Unhashable()
 
