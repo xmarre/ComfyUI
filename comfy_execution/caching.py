@@ -85,22 +85,32 @@ def _sanitized_sort_key(obj, depth=0, max_depth=32):
         return (obj_type.__module__, obj_type.__qualname__, "OPAQUE")
 
 
-def _sanitize_signature_input(obj, depth=0, max_depth=32):
+def _sanitize_signature_input(obj, depth=0, max_depth=32, seen=None):
     """Normalize signature inputs to safe built-in containers.
 
-    Preserves built-in container type and replaces opaque runtime values with Unhashable().
+    Preserves built-in container type, replaces opaque runtime values with
+    Unhashable(), and stops safely on cycles or excessive depth.
     """
     if depth >= max_depth:
         return Unhashable()
 
+    if seen is None:
+        seen = set()
+
     obj_type = type(obj)
+    if obj_type in (dict, list, tuple, set, frozenset):
+        obj_id = id(obj)
+        if obj_id in seen:
+            return Unhashable()
+        next_seen = seen | {obj_id}
+
     if obj_type in (int, float, str, bool, bytes, type(None)):
         return obj
     elif obj_type is dict:
         sanitized_items = [
             (
-                _sanitize_signature_input(key, depth + 1, max_depth),
-                _sanitize_signature_input(value, depth + 1, max_depth),
+                _sanitize_signature_input(key, depth + 1, max_depth, next_seen),
+                _sanitize_signature_input(value, depth + 1, max_depth, next_seen),
             )
             for key, value in obj.items()
         ]
@@ -112,13 +122,13 @@ def _sanitize_signature_input(obj, depth=0, max_depth=32):
         )
         return {key: value for key, value in sanitized_items}
     elif obj_type is list:
-        return [_sanitize_signature_input(item, depth + 1, max_depth) for item in obj]
+        return [_sanitize_signature_input(item, depth + 1, max_depth, next_seen) for item in obj]
     elif obj_type is tuple:
-        return tuple(_sanitize_signature_input(item, depth + 1, max_depth) for item in obj)
+        return tuple(_sanitize_signature_input(item, depth + 1, max_depth, next_seen) for item in obj)
     elif obj_type is set:
-        return {_sanitize_signature_input(item, depth + 1, max_depth) for item in obj}
+        return {_sanitize_signature_input(item, depth + 1, max_depth, next_seen) for item in obj}
     elif obj_type is frozenset:
-        return frozenset(_sanitize_signature_input(item, depth + 1, max_depth) for item in obj)
+        return frozenset(_sanitize_signature_input(item, depth + 1, max_depth, next_seen) for item in obj)
     else:
         # Execution-cache signatures should be built from prompt-safe values.
         # If a custom node injects a runtime object here, mark it unhashable so
