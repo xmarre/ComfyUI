@@ -16,6 +16,7 @@ NODE_CLASS_CONTAINS_UNIQUE_ID: Dict[str, bool] = {}
 
 
 def include_unique_id_in_input(class_type: str) -> bool:
+    """Return whether a node class includes UNIQUE_ID among its hidden inputs."""
     if class_type in NODE_CLASS_CONTAINS_UNIQUE_ID:
         return NODE_CLASS_CONTAINS_UNIQUE_ID[class_type]
     class_def = nodes.NODE_CLASS_MAPPINGS[class_type]
@@ -23,27 +24,35 @@ def include_unique_id_in_input(class_type: str) -> bool:
     return NODE_CLASS_CONTAINS_UNIQUE_ID[class_type]
 
 class CacheKeySet(ABC):
+    """Base helper for building and storing cache keys for prompt nodes."""
     def __init__(self, dynprompt, node_ids, is_changed_cache):
+        """Initialize cache-key storage for a dynamic prompt execution pass."""
         self.keys = {}
         self.subcache_keys = {}
 
     @abstractmethod
     async def add_keys(self, node_ids):
+        """Populate cache keys for the provided node ids."""
         raise NotImplementedError()
 
     def all_node_ids(self):
+        """Return the set of node ids currently tracked by this key set."""
         return set(self.keys.keys())
 
     def get_used_keys(self):
+        """Return the computed cache keys currently in use."""
         return self.keys.values()
 
     def get_used_subcache_keys(self):
+        """Return the computed subcache keys currently in use."""
         return self.subcache_keys.values()
 
     def get_data_key(self, node_id):
+        """Return the cache key for a node, if present."""
         return self.keys.get(node_id, None)
 
     def get_subcache_key(self, node_id):
+        """Return the subcache key for a node, if present."""
         return self.subcache_keys.get(node_id, None)
 
 class Unhashable:
@@ -184,11 +193,14 @@ def to_hashable(obj, depth=0, max_depth=32, seen=None):
         return Unhashable()
 
 class CacheKeySetID(CacheKeySet):
+    """Cache-key strategy that keys nodes by node id and class type."""
     def __init__(self, dynprompt, node_ids, is_changed_cache):
+        """Initialize identity-based cache keys for the supplied dynamic prompt."""
         super().__init__(dynprompt, node_ids, is_changed_cache)
         self.dynprompt = dynprompt
 
     async def add_keys(self, node_ids):
+        """Populate identity-based keys for nodes that exist in the dynamic prompt."""
         for node_id in node_ids:
             if node_id in self.keys:
                 continue
@@ -201,14 +213,17 @@ class CacheKeySetID(CacheKeySet):
 class CacheKeySetInputSignature(CacheKeySet):
     """Cache-key strategy that hashes a node's immediate inputs plus ancestor references."""
     def __init__(self, dynprompt, node_ids, is_changed_cache):
+        """Initialize input-signature-based cache keys for the supplied dynamic prompt."""
         super().__init__(dynprompt, node_ids, is_changed_cache)
         self.dynprompt = dynprompt
         self.is_changed_cache = is_changed_cache
 
     def include_node_id_in_input(self) -> bool:
+        """Return whether node ids should be included in computed input signatures."""
         return False
 
     async def add_keys(self, node_ids):
+        """Populate input-signature-based keys for nodes in the dynamic prompt."""
         for node_id in node_ids:
             if node_id in self.keys:
                 continue
@@ -254,12 +269,14 @@ class CacheKeySetInputSignature(CacheKeySet):
     # This function returns a list of all ancestors of the given node. The order of the list is
     # deterministic based on which specific inputs the ancestor is connected by.
     def get_ordered_ancestry(self, dynprompt, node_id):
+        """Return ancestors in deterministic traversal order and their index mapping."""
         ancestors = []
         order_mapping = {}
         self.get_ordered_ancestry_internal(dynprompt, node_id, ancestors, order_mapping)
         return ancestors, order_mapping
 
     def get_ordered_ancestry_internal(self, dynprompt, node_id, ancestors, order_mapping):
+        """Recursively collect ancestors in input order without revisiting prior nodes."""
         if not dynprompt.has_node(node_id):
             return
         inputs = dynprompt.get_node(node_id)["inputs"]
