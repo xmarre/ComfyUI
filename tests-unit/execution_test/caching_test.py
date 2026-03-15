@@ -309,3 +309,47 @@ def test_get_node_signature_returns_top_level_unhashable_for_tainted_signature(c
     signature = asyncio.run(key_set.get_node_signature(dynprompt, "node"))
 
     assert isinstance(signature, caching.Unhashable)
+
+
+def test_shallow_is_changed_signature_accepts_primitive_lists(caching_module):
+    """Primitive-only `is_changed` lists should stay hashable without deep descent."""
+    caching, _ = caching_module
+
+    sanitized = caching._shallow_is_changed_signature([1, "two", None, True])
+
+    assert sanitized == ("is_changed_list", (1, "two", None, True))
+
+
+def test_shallow_is_changed_signature_fails_closed_on_nested_containers(caching_module):
+    """Nested containers from `is_changed` should be rejected immediately."""
+    caching, _ = caching_module
+
+    sanitized = caching._shallow_is_changed_signature([1, ["nested"]])
+
+    assert isinstance(sanitized, caching.Unhashable)
+
+
+def test_get_immediate_node_signature_marks_recursive_is_changed_unhashable(caching_module, monkeypatch):
+    """Recursive `is_changed` payloads should be cut off before signature canonicalization."""
+    caching, nodes_module = caching_module
+    monkeypatch.setitem(nodes_module.NODE_CLASS_MAPPINGS, "UnitTestNode", _DummyNode)
+
+    is_changed_value = []
+    is_changed_value.append(is_changed_value)
+    dynprompt = _FakeDynPrompt(
+        {
+            "node": {
+                "class_type": "UnitTestNode",
+                "inputs": {"value": 5},
+            }
+        }
+    )
+    key_set = caching.CacheKeySetInputSignature(
+        dynprompt,
+        ["node"],
+        _FakeIsChangedCache({"node": is_changed_value}),
+    )
+
+    signature = asyncio.run(key_set.get_immediate_node_signature(dynprompt, "node", {}))
+
+    assert isinstance(signature[1], caching.Unhashable)

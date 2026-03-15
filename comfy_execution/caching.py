@@ -67,6 +67,22 @@ _MAX_SIGNATURE_CONTAINER_VISITS = 10_000
 _FAILED_SIGNATURE = object()
 
 
+def _shallow_is_changed_signature(value):
+    """Sanitize execution-time `is_changed` values without deep recursion."""
+    value_type = type(value)
+    if value_type in _PRIMITIVE_SIGNATURE_TYPES:
+        return value
+    if value_type is list or value_type is tuple:
+        try:
+            items = tuple(value)
+        except RuntimeError:
+            return Unhashable()
+        if all(type(item) in _PRIMITIVE_SIGNATURE_TYPES for item in items):
+            container_tag = "is_changed_list" if value_type is list else "is_changed_tuple"
+            return (container_tag, items)
+    return Unhashable()
+
+
 def _primitive_signature_sort_key(obj):
     """Return a deterministic ordering key for primitive signature values."""
     obj_type = type(obj)
@@ -429,7 +445,7 @@ class CacheKeySetInputSignature(CacheKeySet):
         node = dynprompt.get_node(node_id)
         class_type = node["class_type"]
         class_def = nodes.NODE_CLASS_MAPPINGS[class_type]
-        signature = [class_type, await self.is_changed_cache.get(node_id)]
+        signature = [class_type, _shallow_is_changed_signature(await self.is_changed_cache.get(node_id))]
         if self.include_node_id_in_input() or (hasattr(class_def, "NOT_IDEMPOTENT") and class_def.NOT_IDEMPOTENT) or include_unique_id_in_input(class_type):
             signature.append(node_id)
         inputs = node["inputs"]
