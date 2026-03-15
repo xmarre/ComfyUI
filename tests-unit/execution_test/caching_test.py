@@ -205,6 +205,15 @@ def test_to_hashable_handles_shared_builtin_substructures(caching_module):
     assert hashable[1][0][0] == "list"
 
 
+def test_to_hashable_fails_closed_for_ordered_container_with_opaque_child(caching_module):
+    """Ordered containers should fail closed when a child cannot be canonicalized."""
+    caching, _ = caching_module
+
+    result = caching.to_hashable([object()])
+
+    assert isinstance(result, caching.Unhashable)
+
+
 def test_to_hashable_canonicalizes_dict_insertion_order(caching_module):
     """Dicts with the same content should hash identically regardless of insertion order."""
     caching, _ = caching_module

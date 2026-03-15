@@ -283,6 +283,10 @@ def to_hashable(obj, max_nodes=_MAX_SIGNATURE_CONTAINER_VISITS):
             return value
         return memo.get(id(value), Unhashable())
 
+    def is_failed(value):
+        """Return whether a resolved child value represents failed canonicalization."""
+        return type(value) is Unhashable
+
     def resolve_unordered_values(current_items, container_tag):
         """Resolve a set-like container or fail closed if ordering is ambiguous."""
         try:
@@ -290,6 +294,8 @@ def to_hashable(obj, max_nodes=_MAX_SIGNATURE_CONTAINER_VISITS):
                 (_sanitized_sort_key(item, memo=sort_memo), resolve_value(item))
                 for item in current_items
             ]
+            if any(is_failed(value) for _, value in ordered_items):
+                return Unhashable()
             ordered_items.sort(key=lambda item: item[0])
         except RuntimeError:
             return Unhashable()
@@ -327,6 +333,9 @@ def to_hashable(obj, max_nodes=_MAX_SIGNATURE_CONTAINER_VISITS):
                         (_sanitized_sort_key(k, memo=sort_memo), resolve_value(k), resolve_value(v))
                         for k, v in items
                     ]
+                    if any(is_failed(key) or is_failed(value) for _, key, value in ordered_items):
+                        memo[current_id] = Unhashable()
+                        continue
                     ordered_items.sort(key=lambda item: item[0])
                     for index in range(1, len(ordered_items)):
                         if ordered_items[index - 1][0] == ordered_items[index][0]:
@@ -341,12 +350,20 @@ def to_hashable(obj, max_nodes=_MAX_SIGNATURE_CONTAINER_VISITS):
                     items = snapshots.pop(current_id, None)
                     if items is None:
                         items = list(current)
-                    memo[current_id] = ("list", tuple(resolve_value(item) for item in items))
+                    resolved_items = tuple(resolve_value(item) for item in items)
+                    if any(is_failed(item) for item in resolved_items):
+                        memo[current_id] = Unhashable()
+                    else:
+                        memo[current_id] = ("list", resolved_items)
                 elif current_type is tuple:
                     items = snapshots.pop(current_id, None)
                     if items is None:
                         items = list(current)
-                    memo[current_id] = ("tuple", tuple(resolve_value(item) for item in items))
+                    resolved_items = tuple(resolve_value(item) for item in items)
+                    if any(is_failed(item) for item in resolved_items):
+                        memo[current_id] = Unhashable()
+                    else:
+                        memo[current_id] = ("tuple", resolved_items)
                 elif current_type is set:
                     items = snapshots.pop(current_id, None)
                     if items is None:
