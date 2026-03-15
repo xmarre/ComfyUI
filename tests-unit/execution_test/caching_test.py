@@ -105,6 +105,35 @@ def test_sanitize_signature_input_handles_shared_builtin_substructures(caching_m
     assert sanitized[0][1]["value"] == 2
 
 
+@pytest.mark.parametrize(
+    "container_factory",
+    [
+        lambda marker: [marker],
+        lambda marker: (marker,),
+        lambda marker: {marker},
+        lambda marker: frozenset({marker}),
+        lambda marker: {marker: "value"},
+    ],
+)
+def test_sanitize_signature_input_fails_closed_on_runtimeerror(caching_module, monkeypatch, container_factory):
+    """Traversal RuntimeError should degrade sanitization to Unhashable."""
+    caching, _ = caching_module
+    original = caching._sanitize_signature_input
+    marker = object()
+
+    def raising_sanitize(obj, *args, **kwargs):
+        """Raise a traversal RuntimeError for the marker value and delegate otherwise."""
+        if obj is marker:
+            raise RuntimeError("container changed during iteration")
+        return original(obj, *args, **kwargs)
+
+    monkeypatch.setattr(caching, "_sanitize_signature_input", raising_sanitize)
+
+    sanitized = original(container_factory(marker))
+
+    assert isinstance(sanitized, caching.Unhashable)
+
+
 def test_to_hashable_handles_shared_builtin_substructures(caching_module):
     """Repeated sanitized content should hash stably for shared substructures."""
     caching, _ = caching_module
@@ -116,6 +145,28 @@ def test_to_hashable_handles_shared_builtin_substructures(caching_module):
     assert hashable[0] == "list"
     assert hashable[1][0] == hashable[1][1]
     assert hashable[1][0][0] == "list"
+
+
+@pytest.mark.parametrize(
+    "container_factory",
+    [
+        set,
+        frozenset,
+    ],
+)
+def test_to_hashable_fails_closed_on_runtimeerror(caching_module, monkeypatch, container_factory):
+    """Traversal RuntimeError should degrade unordered hash conversion to Unhashable."""
+    caching, _ = caching_module
+
+    def raising_sort_key(obj, *args, **kwargs):
+        """Raise a traversal RuntimeError while unordered values are canonicalized."""
+        raise RuntimeError("container changed during iteration")
+
+    monkeypatch.setattr(caching, "_sanitized_sort_key", raising_sort_key)
+
+    hashable = caching.to_hashable(container_factory({"value"}))
+
+    assert isinstance(hashable, caching.Unhashable)
 
 
 def test_sanitize_signature_input_fails_closed_for_ambiguous_dict_ordering(caching_module):
