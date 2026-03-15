@@ -246,7 +246,10 @@ def _signature_to_hashable_impl(obj, depth=0, max_depth=_MAX_SIGNATURE_DEPTH, ac
 
 def _signature_to_hashable(obj, max_nodes=_MAX_SIGNATURE_CONTAINER_VISITS):
     """Build the final cache-signature representation in one fail-closed pass."""
-    result = _signature_to_hashable_impl(obj, budget={"remaining": max_nodes})
+    try:
+        result = _signature_to_hashable_impl(obj, budget={"remaining": max_nodes})
+    except RuntimeError:
+        return Unhashable()
     if result is _FAILED_SIGNATURE:
         return Unhashable()
     return result[0]
@@ -320,10 +323,20 @@ def to_hashable(obj, max_nodes=_MAX_SIGNATURE_CONTAINER_VISITS):
                     items = snapshots.pop(current_id, None)
                     if items is None:
                         items = list(current.items())
-                    memo[current_id] = (
-                        "dict",
-                        tuple((resolve_value(k), resolve_value(v)) for k, v in items),
-                    )
+                    ordered_items = [
+                        (_sanitized_sort_key(k, memo=sort_memo), resolve_value(k), resolve_value(v))
+                        for k, v in items
+                    ]
+                    ordered_items.sort(key=lambda item: item[0])
+                    for index in range(1, len(ordered_items)):
+                        if ordered_items[index - 1][0] == ordered_items[index][0]:
+                            memo[current_id] = Unhashable()
+                            break
+                    else:
+                        memo[current_id] = (
+                            "dict",
+                            tuple((key, value) for _, key, value in ordered_items),
+                        )
                 elif current_type is list:
                     items = snapshots.pop(current_id, None)
                     if items is None:

@@ -205,6 +205,17 @@ def test_to_hashable_handles_shared_builtin_substructures(caching_module):
     assert hashable[1][0][0] == "list"
 
 
+def test_to_hashable_canonicalizes_dict_insertion_order(caching_module):
+    """Dicts with the same content should hash identically regardless of insertion order."""
+    caching, _ = caching_module
+
+    first = {"b": 2, "a": 1}
+    second = {"a": 1, "b": 2}
+
+    assert caching.to_hashable(first) == ("dict", (("a", 1), ("b", 2)))
+    assert caching.to_hashable(first) == caching.to_hashable(second)
+
+
 @pytest.mark.parametrize(
     "container_factory",
     [
@@ -223,6 +234,19 @@ def test_to_hashable_fails_closed_on_runtimeerror(caching_module, monkeypatch, c
     monkeypatch.setattr(caching, "_sanitized_sort_key", raising_sort_key)
 
     hashable = caching.to_hashable(container_factory({"value"}))
+
+    assert isinstance(hashable, caching.Unhashable)
+
+
+def test_to_hashable_fails_closed_for_ambiguous_dict_ordering(caching_module):
+    """Ambiguous dict key ordering should fail closed instead of using insertion order."""
+    caching, _ = caching_module
+    ambiguous = {
+        _OpaqueValue(): 1,
+        _OpaqueValue(): 2,
+    }
+
+    hashable = caching.to_hashable(ambiguous)
 
     assert isinstance(hashable, caching.Unhashable)
 
