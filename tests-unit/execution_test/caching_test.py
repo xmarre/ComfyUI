@@ -1,4 +1,4 @@
-"""Unit tests for cache-signature sanitization and hash conversion hardening."""
+"""Unit tests for cache-signature canonicalization hardening."""
 
 import asyncio
 import importlib
@@ -76,96 +76,91 @@ def caching_module(monkeypatch):
     return module, nodes_module
 
 
-def test_sanitize_signature_input_handles_shared_builtin_substructures(caching_module):
-    """Shared built-in substructures should sanitize without collapsing to Unhashable."""
+def test_signature_to_hashable_handles_shared_builtin_substructures(caching_module):
+    """Shared built-in substructures should canonicalize without collapsing to Unhashable."""
     caching, _ = caching_module
     shared = [{"value": 1}, {"value": 2}]
 
-    sanitized = caching._sanitize_signature_input([shared, shared])
+    signature = caching._signature_to_hashable([shared, shared])
 
-    assert isinstance(sanitized, list)
-    assert sanitized[0] == sanitized[1]
-    assert sanitized[0][0]["value"] == 1
-    assert sanitized[0][1]["value"] == 2
+    assert signature[0] == "list"
+    assert signature[1][0] == signature[1][1]
+    assert signature[1][0][0] == "list"
+    assert signature[1][0][1][0] == ("dict", (("value", 1),))
+    assert signature[1][0][1][1] == ("dict", (("value", 2),))
 
 
-def test_sanitize_signature_input_marks_tainted_on_opaque_values(caching_module):
-    """Opaque values should mark the containing signature as tainted."""
+def test_signature_to_hashable_fails_closed_on_opaque_values(caching_module):
+    """Opaque values should collapse the full signature to Unhashable immediately."""
     caching, _ = caching_module
-    taint_state = {"tainted": False}
 
-    sanitized = caching._sanitize_signature_input(["safe", object()], taint_state=taint_state)
+    signature = caching._signature_to_hashable(["safe", object()])
 
-    assert isinstance(sanitized, list)
-    assert taint_state["tainted"] is True
-    assert isinstance(sanitized[1], caching.Unhashable)
+    assert isinstance(signature, caching.Unhashable)
 
 
-def test_sanitize_signature_input_stops_descending_after_taint(caching_module, monkeypatch):
-    """Once tainted, later recursive calls should return immediately without deeper descent."""
+def test_signature_to_hashable_stops_descending_after_failure(caching_module, monkeypatch):
+    """Once canonicalization fails, later recursive descent should stop immediately."""
     caching, _ = caching_module
-    original = caching._sanitize_signature_input
+    original = caching._signature_to_hashable_impl
     marker = object()
     marker_seen = False
 
-    def tracking_sanitize(obj, *args, **kwargs):
-        """Track whether recursion reaches the nested marker after tainting."""
+    def tracking_canonicalize(obj, *args, **kwargs):
+        """Track whether recursion reaches the nested marker after failure."""
         nonlocal marker_seen
         if obj is marker:
             marker_seen = True
         return original(obj, *args, **kwargs)
 
-    monkeypatch.setattr(caching, "_sanitize_signature_input", tracking_sanitize)
+    monkeypatch.setattr(caching, "_signature_to_hashable_impl", tracking_canonicalize)
 
-    taint_state = {"tainted": False}
-    sanitized = original([object(), [marker]], taint_state=taint_state)
+    signature = caching._signature_to_hashable([object(), [marker]])
 
-    assert isinstance(sanitized, list)
-    assert taint_state["tainted"] is True
+    assert isinstance(signature, caching.Unhashable)
     assert marker_seen is False
-    assert isinstance(sanitized[1], caching.Unhashable)
 
 
-def test_sanitize_signature_input_snapshots_list_before_recursing(caching_module, monkeypatch):
-    """List sanitization should read a point-in-time snapshot before recursive descent."""
+def test_signature_to_hashable_snapshots_list_before_recursing(caching_module, monkeypatch):
+    """List canonicalization should read a point-in-time snapshot before recursive descent."""
     caching, _ = caching_module
-    original = caching._sanitize_signature_input
-    marker = object()
+    original = caching._signature_to_hashable_impl
+    marker = ("marker",)
     values = [marker, 2]
 
-    def mutating_sanitize(obj, *args, **kwargs):
+    def mutating_canonicalize(obj, *args, **kwargs):
         """Mutate the live list during recursion to verify snapshot-based traversal."""
         if obj is marker:
             values[1] = 3
         return original(obj, *args, **kwargs)
 
-    monkeypatch.setattr(caching, "_sanitize_signature_input", mutating_sanitize)
+    monkeypatch.setattr(caching, "_signature_to_hashable_impl", mutating_canonicalize)
 
-    sanitized = original(values)
+    signature = caching._signature_to_hashable(values)
 
-    assert isinstance(sanitized, list)
-    assert sanitized[1] == 2
+    assert signature == ("list", (("tuple", ("marker",)), 2))
+    assert values[1] == 3
 
 
-def test_sanitize_signature_input_snapshots_dict_before_recursing(caching_module, monkeypatch):
-    """Dict sanitization should read a point-in-time snapshot before recursive descent."""
+def test_signature_to_hashable_snapshots_dict_before_recursing(caching_module, monkeypatch):
+    """Dict canonicalization should read a point-in-time snapshot before recursive descent."""
     caching, _ = caching_module
-    original = caching._sanitize_signature_input
-    marker = object()
+    original = caching._signature_to_hashable_impl
+    marker = ("marker",)
     values = {"first": marker, "second": 2}
 
-    def mutating_sanitize(obj, *args, **kwargs):
+    def mutating_canonicalize(obj, *args, **kwargs):
         """Mutate the live dict during recursion to verify snapshot-based traversal."""
         if obj is marker:
             values["second"] = 3
         return original(obj, *args, **kwargs)
 
-    monkeypatch.setattr(caching, "_sanitize_signature_input", mutating_sanitize)
+    monkeypatch.setattr(caching, "_signature_to_hashable_impl", mutating_canonicalize)
 
-    sanitized = original(values)
+    signature = caching._signature_to_hashable(values)
 
-    assert isinstance(sanitized, dict)
-    assert sanitized["second"] == 2
+    assert signature == ("dict", (("first", ("tuple", ("marker",))), ("second", 2)))
+    assert values["second"] == 3
 
 
 @pytest.mark.parametrize(
@@ -178,31 +173,31 @@ def test_sanitize_signature_input_snapshots_dict_before_recursing(caching_module
         lambda marker: {marker: "value"},
     ],
 )
-def test_sanitize_signature_input_fails_closed_on_runtimeerror(caching_module, monkeypatch, container_factory):
-    """Traversal RuntimeError should degrade sanitization to Unhashable."""
+def test_signature_to_hashable_fails_closed_on_runtimeerror(caching_module, monkeypatch, container_factory):
+    """Traversal RuntimeError should degrade canonicalization to Unhashable."""
     caching, _ = caching_module
-    original = caching._sanitize_signature_input
+    original = caching._signature_to_hashable_impl
     marker = object()
 
-    def raising_sanitize(obj, *args, **kwargs):
+    def raising_canonicalize(obj, *args, **kwargs):
         """Raise a traversal RuntimeError for the marker value and delegate otherwise."""
         if obj is marker:
             raise RuntimeError("container changed during iteration")
         return original(obj, *args, **kwargs)
 
-    monkeypatch.setattr(caching, "_sanitize_signature_input", raising_sanitize)
+    monkeypatch.setattr(caching, "_signature_to_hashable_impl", raising_canonicalize)
 
-    sanitized = original(container_factory(marker))
+    signature = caching._signature_to_hashable(container_factory(marker))
 
-    assert isinstance(sanitized, caching.Unhashable)
+    assert isinstance(signature, caching.Unhashable)
 
 
 def test_to_hashable_handles_shared_builtin_substructures(caching_module):
-    """Repeated sanitized content should hash stably for shared substructures."""
+    """The legacy helper should still hash sanitized built-ins stably when used directly."""
     caching, _ = caching_module
     shared = [{"value": 1}, {"value": 2}]
 
-    sanitized = caching._sanitize_signature_input([shared, shared])
+    sanitized = [shared, shared]
     hashable = caching.to_hashable(sanitized)
 
     assert hashable[0] == "list"
@@ -232,7 +227,7 @@ def test_to_hashable_fails_closed_on_runtimeerror(caching_module, monkeypatch, c
     assert isinstance(hashable, caching.Unhashable)
 
 
-def test_sanitize_signature_input_fails_closed_for_ambiguous_dict_ordering(caching_module):
+def test_signature_to_hashable_fails_closed_for_ambiguous_dict_ordering(caching_module):
     """Ambiguous dict sort ties should fail closed instead of depending on input order."""
     caching, _ = caching_module
     ambiguous = {
@@ -240,7 +235,7 @@ def test_sanitize_signature_input_fails_closed_for_ambiguous_dict_ordering(cachi
         _OpaqueValue(): _OpaqueValue(),
     }
 
-    sanitized = caching._sanitize_signature_input(ambiguous)
+    sanitized = caching._signature_to_hashable(ambiguous)
 
     assert isinstance(sanitized, caching.Unhashable)
 

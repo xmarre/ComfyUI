@@ -64,12 +64,13 @@ _PRIMITIVE_SIGNATURE_TYPES = (int, float, str, bool, bytes, type(None))
 _CONTAINER_SIGNATURE_TYPES = (dict, list, tuple, set, frozenset)
 _MAX_SIGNATURE_DEPTH = 32
 _MAX_SIGNATURE_CONTAINER_VISITS = 10_000
+_FAILED_SIGNATURE = object()
 
 
-def _mark_signature_tainted(taint_state):
-    """Record that signature sanitization hit a fail-closed condition."""
-    if taint_state is not None:
-        taint_state["tainted"] = True
+def _primitive_signature_sort_key(obj):
+    """Return a deterministic ordering key for primitive signature values."""
+    obj_type = type(obj)
+    return ("primitive", obj_type.__module__, obj_type.__qualname__, repr(obj))
 
 
 def _sanitized_sort_key(obj, depth=0, max_depth=_MAX_SIGNATURE_DEPTH, active=None, memo=None):
@@ -123,21 +124,10 @@ def _sanitized_sort_key(obj, depth=0, max_depth=_MAX_SIGNATURE_DEPTH, active=Non
     return result
 
 
-def _sanitize_signature_input(obj, depth=0, max_depth=_MAX_SIGNATURE_DEPTH, active=None, memo=None, budget=None, taint_state=None):
-    """Normalize signature inputs to safe built-in containers.
-
-    Preserves built-in container type, replaces opaque runtime values with
-    Unhashable(), stops safely on cycles or excessive depth, memoizes repeated
-    built-in substructures so shared DAG-like inputs do not explode into
-    repeated recursive work, and optionally records when sanitization had to
-    fail closed anywhere in the traversed structure.
-    """
-    if taint_state is not None and taint_state.get("tainted"):
-        return Unhashable()
-
+def _signature_to_hashable_impl(obj, depth=0, max_depth=_MAX_SIGNATURE_DEPTH, active=None, memo=None, budget=None):
+    """Canonicalize signature inputs directly into their final hashable form."""
     if depth >= max_depth:
-        _mark_signature_tainted(taint_state)
-        return Unhashable()
+        return _FAILED_SIGNATURE
 
     if active is None:
         active = set()
@@ -148,93 +138,102 @@ def _sanitize_signature_input(obj, depth=0, max_depth=_MAX_SIGNATURE_DEPTH, acti
 
     obj_type = type(obj)
     if obj_type in _PRIMITIVE_SIGNATURE_TYPES:
-        return obj
-    if obj_type not in _CONTAINER_SIGNATURE_TYPES:
-        _mark_signature_tainted(taint_state)
-        return Unhashable()
+        return obj, _primitive_signature_sort_key(obj)
+    if obj_type is Unhashable or obj_type not in _CONTAINER_SIGNATURE_TYPES:
+        return _FAILED_SIGNATURE
 
     obj_id = id(obj)
     if obj_id in memo:
         return memo[obj_id]
     if obj_id in active:
-        _mark_signature_tainted(taint_state)
-        return Unhashable()
+        return _FAILED_SIGNATURE
 
     budget["remaining"] -= 1
     if budget["remaining"] < 0:
-        _mark_signature_tainted(taint_state)
-        return Unhashable()
+        return _FAILED_SIGNATURE
 
     active.add(obj_id)
     try:
         if obj_type is dict:
             try:
                 items = list(obj.items())
-                sort_memo = {}
-                sanitized_items = [
-                    (
-                        _sanitize_signature_input(key, depth + 1, max_depth, active, memo, budget, taint_state),
-                        _sanitize_signature_input(value, depth + 1, max_depth, active, memo, budget, taint_state),
-                    )
-                    for key, value in items
-                ]
-                ordered_items = [
-                    (
-                        (
-                            _sanitized_sort_key(key, depth + 1, max_depth, memo=sort_memo),
-                            _sanitized_sort_key(value, depth + 1, max_depth, memo=sort_memo),
-                        ),
-                        (key, value),
-                    )
-                    for key, value in sanitized_items
-                ]
-                ordered_items.sort(key=lambda item: item[0])
+            except RuntimeError:
+                return _FAILED_SIGNATURE
 
-                result = Unhashable()
-                for index in range(1, len(ordered_items)):
-                    previous_sort_key, previous_item = ordered_items[index - 1]
-                    current_sort_key, current_item = ordered_items[index]
-                    if previous_sort_key == current_sort_key and previous_item != current_item:
-                        _mark_signature_tainted(taint_state)
-                        break
-                else:
-                    result = {key: value for _, (key, value) in ordered_items}
-            except RuntimeError:
-                _mark_signature_tainted(taint_state)
-                result = Unhashable()
-        elif obj_type is list:
+            ordered_items = []
+            for key, value in items:
+                key_result = _signature_to_hashable_impl(key, depth + 1, max_depth, active, memo, budget)
+                if key_result is _FAILED_SIGNATURE:
+                    return _FAILED_SIGNATURE
+                value_result = _signature_to_hashable_impl(value, depth + 1, max_depth, active, memo, budget)
+                if value_result is _FAILED_SIGNATURE:
+                    return _FAILED_SIGNATURE
+                key_value, key_sort = key_result
+                value_value, value_sort = value_result
+                ordered_items.append((((key_sort, value_sort)), (key_value, value_value)))
+
+            ordered_items.sort(key=lambda item: item[0])
+            for index in range(1, len(ordered_items)):
+                previous_sort_key, previous_item = ordered_items[index - 1]
+                current_sort_key, current_item = ordered_items[index]
+                if previous_sort_key == current_sort_key and previous_item != current_item:
+                    return _FAILED_SIGNATURE
+
+            value = ("dict", tuple(item for _, item in ordered_items))
+            sort_key = ("dict", tuple(sort_key for sort_key, _ in ordered_items))
+        elif obj_type is list or obj_type is tuple:
             try:
                 items = list(obj)
-                result = [_sanitize_signature_input(item, depth + 1, max_depth, active, memo, budget, taint_state) for item in items]
             except RuntimeError:
-                _mark_signature_tainted(taint_state)
-                result = Unhashable()
-        elif obj_type is tuple:
-            try:
-                items = list(obj)
-                result = tuple(_sanitize_signature_input(item, depth + 1, max_depth, active, memo, budget, taint_state) for item in items)
-            except RuntimeError:
-                _mark_signature_tainted(taint_state)
-                result = Unhashable()
-        elif obj_type is set:
-            try:
-                items = list(obj)
-                result = {_sanitize_signature_input(item, depth + 1, max_depth, active, memo, budget, taint_state) for item in items}
-            except RuntimeError:
-                _mark_signature_tainted(taint_state)
-                result = Unhashable()
+                return _FAILED_SIGNATURE
+
+            child_results = []
+            for item in items:
+                child_result = _signature_to_hashable_impl(item, depth + 1, max_depth, active, memo, budget)
+                if child_result is _FAILED_SIGNATURE:
+                    return _FAILED_SIGNATURE
+                child_results.append(child_result)
+
+            container_tag = "list" if obj_type is list else "tuple"
+            value = (container_tag, tuple(child for child, _ in child_results))
+            sort_key = (container_tag, tuple(child_sort for _, child_sort in child_results))
         else:
             try:
                 items = list(obj)
-                result = frozenset(_sanitize_signature_input(item, depth + 1, max_depth, active, memo, budget, taint_state) for item in items)
             except RuntimeError:
-                _mark_signature_tainted(taint_state)
-                result = Unhashable()
+                return _FAILED_SIGNATURE
+
+            ordered_items = []
+            for item in items:
+                child_result = _signature_to_hashable_impl(item, depth + 1, max_depth, active, memo, budget)
+                if child_result is _FAILED_SIGNATURE:
+                    return _FAILED_SIGNATURE
+                child_value, child_sort = child_result
+                ordered_items.append((child_sort, child_value))
+
+            ordered_items.sort(key=lambda item: item[0])
+            for index in range(1, len(ordered_items)):
+                previous_sort_key, previous_value = ordered_items[index - 1]
+                current_sort_key, current_value = ordered_items[index]
+                if previous_sort_key == current_sort_key and previous_value != current_value:
+                    return _FAILED_SIGNATURE
+
+            container_tag = "set" if obj_type is set else "frozenset"
+            value = (container_tag, tuple(child_value for _, child_value in ordered_items))
+            sort_key = (container_tag, tuple(child_sort for child_sort, _ in ordered_items))
     finally:
         active.discard(obj_id)
 
-    memo[obj_id] = result
-    return result
+    memo[obj_id] = (value, sort_key)
+    return memo[obj_id]
+
+
+def _signature_to_hashable(obj, max_nodes=_MAX_SIGNATURE_CONTAINER_VISITS):
+    """Build the final cache-signature representation in one fail-closed pass."""
+    result = _signature_to_hashable_impl(obj, budget={"remaining": max_nodes})
+    if result is _FAILED_SIGNATURE:
+        return Unhashable()
+    return result[0]
 
 
 def to_hashable(obj, max_nodes=_MAX_SIGNATURE_CONTAINER_VISITS):
@@ -397,11 +396,7 @@ class CacheKeySetInputSignature(CacheKeySet):
         signature.append(await self.get_immediate_node_signature(dynprompt, node_id, order_mapping))
         for ancestor_id in ancestors:
             signature.append(await self.get_immediate_node_signature(dynprompt, ancestor_id, order_mapping))
-        taint_state = {"tainted": False}
-        signature = _sanitize_signature_input(signature, taint_state=taint_state)
-        if taint_state["tainted"]:
-            return Unhashable()
-        return to_hashable(signature)
+        return _signature_to_hashable(signature)
 
     async def get_immediate_node_signature(self, dynprompt, node_id, ancestor_order_mapping):
         """Build the cache-signature fragment for a node's immediate inputs.
@@ -424,7 +419,7 @@ class CacheKeySetInputSignature(CacheKeySet):
                 ancestor_index = ancestor_order_mapping[ancestor_id]
                 signature.append((key,("ANCESTOR", ancestor_index, ancestor_socket)))
             else:
-                signature.append((key, _sanitize_signature_input(inputs[key])))
+                signature.append((key, inputs[key]))
         return signature
 
     # This function returns a list of all ancestors of the given node. The order of the list is
