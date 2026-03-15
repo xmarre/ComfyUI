@@ -417,9 +417,11 @@ class CacheKeySetInputSignature(CacheKeySet):
         return _signature_to_hashable(signature)
 
     async def get_immediate_node_signature(self, dynprompt, node_id, ancestor_order_mapping):
-        """Build the cache-signature fragment for a node's immediate inputs.
+        """Build the immediate cache-signature fragment for a node.
 
-        Link inputs are reduced to ancestor references, while raw values are sanitized first.
+        Link inputs are reduced to ancestor references here, while non-link
+        values are appended as-is. Full canonicalization happens later in
+        `get_node_signature()` via `_signature_to_hashable()`.
         """
         if not dynprompt.has_node(node_id):
             # This node doesn't exist -- we can't cache it.
