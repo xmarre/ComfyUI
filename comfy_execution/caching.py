@@ -66,6 +66,12 @@ _MAX_SIGNATURE_DEPTH = 32
 _MAX_SIGNATURE_CONTAINER_VISITS = 10_000
 
 
+def _mark_signature_tainted(taint_state):
+    """Record that signature sanitization hit a fail-closed condition."""
+    if taint_state is not None:
+        taint_state["tainted"] = True
+
+
 def _sanitized_sort_key(obj, depth=0, max_depth=_MAX_SIGNATURE_DEPTH, active=None, memo=None):
     """Return a deterministic ordering key for sanitized built-in container content."""
     if depth >= max_depth:
@@ -117,15 +123,20 @@ def _sanitized_sort_key(obj, depth=0, max_depth=_MAX_SIGNATURE_DEPTH, active=Non
     return result
 
 
-def _sanitize_signature_input(obj, depth=0, max_depth=_MAX_SIGNATURE_DEPTH, active=None, memo=None, budget=None):
+def _sanitize_signature_input(obj, depth=0, max_depth=_MAX_SIGNATURE_DEPTH, active=None, memo=None, budget=None, taint_state=None):
     """Normalize signature inputs to safe built-in containers.
 
     Preserves built-in container type, replaces opaque runtime values with
-    Unhashable(), stops safely on cycles or excessive depth, and memoizes
-    repeated built-in substructures so shared DAG-like inputs do not explode
-    into repeated recursive work.
+    Unhashable(), stops safely on cycles or excessive depth, memoizes repeated
+    built-in substructures so shared DAG-like inputs do not explode into
+    repeated recursive work, and optionally records when sanitization had to
+    fail closed anywhere in the traversed structure.
     """
+    if taint_state is not None and taint_state.get("tainted"):
+        return Unhashable()
+
     if depth >= max_depth:
+        _mark_signature_tainted(taint_state)
         return Unhashable()
 
     if active is None:
@@ -139,16 +150,19 @@ def _sanitize_signature_input(obj, depth=0, max_depth=_MAX_SIGNATURE_DEPTH, acti
     if obj_type in _PRIMITIVE_SIGNATURE_TYPES:
         return obj
     if obj_type not in _CONTAINER_SIGNATURE_TYPES:
+        _mark_signature_tainted(taint_state)
         return Unhashable()
 
     obj_id = id(obj)
     if obj_id in memo:
         return memo[obj_id]
     if obj_id in active:
+        _mark_signature_tainted(taint_state)
         return Unhashable()
 
     budget["remaining"] -= 1
     if budget["remaining"] < 0:
+        _mark_signature_tainted(taint_state)
         return Unhashable()
 
     active.add(obj_id)
@@ -159,8 +173,8 @@ def _sanitize_signature_input(obj, depth=0, max_depth=_MAX_SIGNATURE_DEPTH, acti
                 sort_memo = {}
                 sanitized_items = [
                     (
-                        _sanitize_signature_input(key, depth + 1, max_depth, active, memo, budget),
-                        _sanitize_signature_input(value, depth + 1, max_depth, active, memo, budget),
+                        _sanitize_signature_input(key, depth + 1, max_depth, active, memo, budget, taint_state),
+                        _sanitize_signature_input(value, depth + 1, max_depth, active, memo, budget, taint_state),
                     )
                     for key, value in items
                 ]
@@ -181,34 +195,40 @@ def _sanitize_signature_input(obj, depth=0, max_depth=_MAX_SIGNATURE_DEPTH, acti
                     previous_sort_key, previous_item = ordered_items[index - 1]
                     current_sort_key, current_item = ordered_items[index]
                     if previous_sort_key == current_sort_key and previous_item != current_item:
+                        _mark_signature_tainted(taint_state)
                         break
                 else:
                     result = {key: value for _, (key, value) in ordered_items}
             except RuntimeError:
+                _mark_signature_tainted(taint_state)
                 result = Unhashable()
         elif obj_type is list:
             try:
                 items = list(obj)
-                result = [_sanitize_signature_input(item, depth + 1, max_depth, active, memo, budget) for item in items]
+                result = [_sanitize_signature_input(item, depth + 1, max_depth, active, memo, budget, taint_state) for item in items]
             except RuntimeError:
+                _mark_signature_tainted(taint_state)
                 result = Unhashable()
         elif obj_type is tuple:
             try:
                 items = list(obj)
-                result = tuple(_sanitize_signature_input(item, depth + 1, max_depth, active, memo, budget) for item in items)
+                result = tuple(_sanitize_signature_input(item, depth + 1, max_depth, active, memo, budget, taint_state) for item in items)
             except RuntimeError:
+                _mark_signature_tainted(taint_state)
                 result = Unhashable()
         elif obj_type is set:
             try:
                 items = list(obj)
-                result = {_sanitize_signature_input(item, depth + 1, max_depth, active, memo, budget) for item in items}
+                result = {_sanitize_signature_input(item, depth + 1, max_depth, active, memo, budget, taint_state) for item in items}
             except RuntimeError:
+                _mark_signature_tainted(taint_state)
                 result = Unhashable()
         else:
             try:
                 items = list(obj)
-                result = frozenset(_sanitize_signature_input(item, depth + 1, max_depth, active, memo, budget) for item in items)
+                result = frozenset(_sanitize_signature_input(item, depth + 1, max_depth, active, memo, budget, taint_state) for item in items)
             except RuntimeError:
+                _mark_signature_tainted(taint_state)
                 result = Unhashable()
     finally:
         active.discard(obj_id)
@@ -377,7 +397,10 @@ class CacheKeySetInputSignature(CacheKeySet):
         signature.append(await self.get_immediate_node_signature(dynprompt, node_id, order_mapping))
         for ancestor_id in ancestors:
             signature.append(await self.get_immediate_node_signature(dynprompt, ancestor_id, order_mapping))
-        signature = _sanitize_signature_input(signature)
+        taint_state = {"tainted": False}
+        signature = _sanitize_signature_input(signature, taint_state=taint_state)
+        if taint_state["tainted"]:
+            return Unhashable()
         return to_hashable(signature)
 
     async def get_immediate_node_signature(self, dynprompt, node_id, ancestor_order_mapping):

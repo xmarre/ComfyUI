@@ -49,22 +49,6 @@ class _OpaqueValue:
     """Hashable opaque object used to exercise fail-closed unordered hashing paths."""
 
 
-def _contains_unhashable(value, unhashable_type):
-    """Return whether a nested built-in structure contains an Unhashable sentinel."""
-    if isinstance(value, unhashable_type):
-        return True
-
-    value_type = type(value)
-    if value_type is dict:
-        return any(
-            _contains_unhashable(key, unhashable_type) or _contains_unhashable(item, unhashable_type)
-            for key, item in value.items()
-        )
-    if value_type in (list, tuple, set, frozenset):
-        return any(_contains_unhashable(item, unhashable_type) for item in value)
-    return False
-
-
 @pytest.fixture
 def caching_module(monkeypatch):
     """Import `comfy_execution.caching` with lightweight stub dependencies."""
@@ -103,6 +87,43 @@ def test_sanitize_signature_input_handles_shared_builtin_substructures(caching_m
     assert sanitized[0] == sanitized[1]
     assert sanitized[0][0]["value"] == 1
     assert sanitized[0][1]["value"] == 2
+
+
+def test_sanitize_signature_input_marks_tainted_on_opaque_values(caching_module):
+    """Opaque values should mark the containing signature as tainted."""
+    caching, _ = caching_module
+    taint_state = {"tainted": False}
+
+    sanitized = caching._sanitize_signature_input(["safe", object()], taint_state=taint_state)
+
+    assert isinstance(sanitized, list)
+    assert taint_state["tainted"] is True
+    assert isinstance(sanitized[1], caching.Unhashable)
+
+
+def test_sanitize_signature_input_stops_descending_after_taint(caching_module, monkeypatch):
+    """Once tainted, later recursive calls should return immediately without deeper descent."""
+    caching, _ = caching_module
+    original = caching._sanitize_signature_input
+    marker = object()
+    marker_seen = False
+
+    def tracking_sanitize(obj, *args, **kwargs):
+        """Track whether recursion reaches the nested marker after tainting."""
+        nonlocal marker_seen
+        if obj is marker:
+            marker_seen = True
+        return original(obj, *args, **kwargs)
+
+    monkeypatch.setattr(caching, "_sanitize_signature_input", tracking_sanitize)
+
+    taint_state = {"tainted": False}
+    sanitized = original([object(), [marker]], taint_state=taint_state)
+
+    assert isinstance(sanitized, list)
+    assert taint_state["tainted"] is True
+    assert marker_seen is False
+    assert isinstance(sanitized[1], caching.Unhashable)
 
 
 def test_sanitize_signature_input_snapshots_list_before_recursing(caching_module, monkeypatch):
@@ -241,10 +262,15 @@ def test_to_hashable_fails_closed_for_ambiguous_unordered_values(caching_module,
     assert isinstance(hashable, caching.Unhashable)
 
 
-def test_get_node_signature_sanitizes_full_signature(caching_module, monkeypatch):
-    """Recursive `is_changed` payloads should be sanitized inside the full node signature."""
+def test_get_node_signature_returns_top_level_unhashable_for_tainted_signature(caching_module, monkeypatch):
+    """Tainted full signatures should fail closed before `to_hashable()` runs."""
     caching, nodes_module = caching_module
     monkeypatch.setitem(nodes_module.NODE_CLASS_MAPPINGS, "UnitTestNode", _DummyNode)
+    monkeypatch.setattr(
+        caching,
+        "to_hashable",
+        lambda *_args, **_kwargs: pytest.fail("to_hashable should not run for tainted signatures"),
+    )
 
     is_changed_value = []
     is_changed_value.append(is_changed_value)
@@ -265,5 +291,4 @@ def test_get_node_signature_sanitizes_full_signature(caching_module, monkeypatch
 
     signature = asyncio.run(key_set.get_node_signature(dynprompt, "node"))
 
-    assert signature[0] == "list"
-    assert _contains_unhashable(signature, caching.Unhashable)
+    assert isinstance(signature, caching.Unhashable)
