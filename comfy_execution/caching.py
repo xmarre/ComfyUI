@@ -155,13 +155,14 @@ def _sanitize_signature_input(obj, depth=0, max_depth=_MAX_SIGNATURE_DEPTH, acti
     try:
         if obj_type is dict:
             try:
+                items = list(obj.items())
                 sort_memo = {}
                 sanitized_items = [
                     (
                         _sanitize_signature_input(key, depth + 1, max_depth, active, memo, budget),
                         _sanitize_signature_input(value, depth + 1, max_depth, active, memo, budget),
                     )
-                    for key, value in obj.items()
+                    for key, value in items
                 ]
                 ordered_items = [
                     (
@@ -187,22 +188,26 @@ def _sanitize_signature_input(obj, depth=0, max_depth=_MAX_SIGNATURE_DEPTH, acti
                 result = Unhashable()
         elif obj_type is list:
             try:
-                result = [_sanitize_signature_input(item, depth + 1, max_depth, active, memo, budget) for item in obj]
+                items = list(obj)
+                result = [_sanitize_signature_input(item, depth + 1, max_depth, active, memo, budget) for item in items]
             except RuntimeError:
                 result = Unhashable()
         elif obj_type is tuple:
             try:
-                result = tuple(_sanitize_signature_input(item, depth + 1, max_depth, active, memo, budget) for item in obj)
+                items = list(obj)
+                result = tuple(_sanitize_signature_input(item, depth + 1, max_depth, active, memo, budget) for item in items)
             except RuntimeError:
                 result = Unhashable()
         elif obj_type is set:
             try:
-                result = {_sanitize_signature_input(item, depth + 1, max_depth, active, memo, budget) for item in obj}
+                items = list(obj)
+                result = {_sanitize_signature_input(item, depth + 1, max_depth, active, memo, budget) for item in items}
             except RuntimeError:
                 result = Unhashable()
         else:
             try:
-                result = frozenset(_sanitize_signature_input(item, depth + 1, max_depth, active, memo, budget) for item in obj)
+                items = list(obj)
+                result = frozenset(_sanitize_signature_input(item, depth + 1, max_depth, active, memo, budget) for item in items)
             except RuntimeError:
                 result = Unhashable()
     finally:

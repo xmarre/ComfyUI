@@ -105,6 +105,48 @@ def test_sanitize_signature_input_handles_shared_builtin_substructures(caching_m
     assert sanitized[0][1]["value"] == 2
 
 
+def test_sanitize_signature_input_snapshots_list_before_recursing(caching_module, monkeypatch):
+    """List sanitization should read a point-in-time snapshot before recursive descent."""
+    caching, _ = caching_module
+    original = caching._sanitize_signature_input
+    marker = object()
+    values = [marker, 2]
+
+    def mutating_sanitize(obj, *args, **kwargs):
+        """Mutate the live list during recursion to verify snapshot-based traversal."""
+        if obj is marker:
+            values[1] = 3
+        return original(obj, *args, **kwargs)
+
+    monkeypatch.setattr(caching, "_sanitize_signature_input", mutating_sanitize)
+
+    sanitized = original(values)
+
+    assert isinstance(sanitized, list)
+    assert sanitized[1] == 2
+
+
+def test_sanitize_signature_input_snapshots_dict_before_recursing(caching_module, monkeypatch):
+    """Dict sanitization should read a point-in-time snapshot before recursive descent."""
+    caching, _ = caching_module
+    original = caching._sanitize_signature_input
+    marker = object()
+    values = {"first": marker, "second": 2}
+
+    def mutating_sanitize(obj, *args, **kwargs):
+        """Mutate the live dict during recursion to verify snapshot-based traversal."""
+        if obj is marker:
+            values["second"] = 3
+        return original(obj, *args, **kwargs)
+
+    monkeypatch.setattr(caching, "_sanitize_signature_input", mutating_sanitize)
+
+    sanitized = original(values)
+
+    assert isinstance(sanitized, dict)
+    assert sanitized["second"] == 2
+
+
 @pytest.mark.parametrize(
     "container_factory",
     [
