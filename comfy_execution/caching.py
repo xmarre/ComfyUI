@@ -170,17 +170,17 @@ def _signature_to_hashable_impl(obj, depth=0, max_depth=_MAX_SIGNATURE_DEPTH, ac
                     return _FAILED_SIGNATURE
                 key_value, key_sort = key_result
                 value_value, value_sort = value_result
-                ordered_items.append((((key_sort, value_sort)), (key_value, value_value)))
+                ordered_items.append((key_sort, value_sort, key_value, value_value))
 
-            ordered_items.sort(key=lambda item: item[0])
+            ordered_items.sort(key=lambda item: (item[0], item[1]))
             for index in range(1, len(ordered_items)):
-                previous_sort_key, previous_item = ordered_items[index - 1]
-                current_sort_key, current_item = ordered_items[index]
-                if previous_sort_key == current_sort_key and previous_item != current_item:
+                previous_key_sort = ordered_items[index - 1][0]
+                current_key_sort = ordered_items[index][0]
+                if previous_key_sort == current_key_sort:
                     return _FAILED_SIGNATURE
 
-            value = ("dict", tuple(item for _, item in ordered_items))
-            sort_key = ("dict", tuple(sort_key for sort_key, _ in ordered_items))
+            value = ("dict", tuple((key_value, value_value) for _, _, key_value, value_value in ordered_items))
+            sort_key = ("dict", tuple((key_sort, value_sort) for key_sort, value_sort, _, _ in ordered_items))
         elif obj_type is list or obj_type is tuple:
             try:
                 items = list(obj)

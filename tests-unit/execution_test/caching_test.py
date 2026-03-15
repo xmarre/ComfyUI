@@ -240,6 +240,28 @@ def test_signature_to_hashable_fails_closed_for_ambiguous_dict_ordering(caching_
     assert isinstance(sanitized, caching.Unhashable)
 
 
+def test_signature_to_hashable_fails_closed_on_dict_key_sort_collisions_even_with_distinct_values(caching_module, monkeypatch):
+    """Different values must not mask dict key-sort collisions during canonicalization."""
+    caching, _ = caching_module
+    original = caching._signature_to_hashable_impl
+    key_a = object()
+    key_b = object()
+
+    def colliding_key_canonicalize(obj, *args, **kwargs):
+        """Force two distinct raw keys to share the same canonical sort key."""
+        if obj is key_a:
+            return ("key-a", ("COLLIDE",))
+        if obj is key_b:
+            return ("key-b", ("COLLIDE",))
+        return original(obj, *args, **kwargs)
+
+    monkeypatch.setattr(caching, "_signature_to_hashable_impl", colliding_key_canonicalize)
+
+    sanitized = caching._signature_to_hashable({key_a: 1, key_b: 2})
+
+    assert isinstance(sanitized, caching.Unhashable)
+
+
 @pytest.mark.parametrize(
     "container_factory",
     [
