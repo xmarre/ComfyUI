@@ -353,11 +353,26 @@ def test_shallow_is_changed_signature_accepts_primitive_lists(caching_module):
     assert sanitized == ("is_changed_list", (1, "two", None, True))
 
 
-def test_shallow_is_changed_signature_fails_closed_on_nested_containers(caching_module):
-    """Nested containers from `is_changed` should be rejected immediately."""
+def test_shallow_is_changed_signature_accepts_structured_builtin_fingerprint_lists(caching_module):
+    """Structured built-in `is_changed` fingerprints should remain representable."""
     caching, _ = caching_module
 
-    sanitized = caching._shallow_is_changed_signature([1, ["nested"]])
+    sanitized = caching._shallow_is_changed_signature([("seed", 42), {"cfg": 8}])
+
+    assert sanitized == (
+        "is_changed_list",
+        (
+            ("tuple", ("seed", 42)),
+            ("dict", (("cfg", 8),)),
+        ),
+    )
+
+
+def test_shallow_is_changed_signature_fails_closed_for_opaque_payload(caching_module):
+    """Opaque `is_changed` payloads should still fail closed."""
+    caching, _ = caching_module
+
+    sanitized = caching._shallow_is_changed_signature([_OpaqueValue()])
 
     assert isinstance(sanitized, caching.Unhashable)
 
