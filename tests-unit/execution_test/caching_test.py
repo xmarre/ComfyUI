@@ -282,6 +282,15 @@ def test_signature_to_hashable_fails_closed_for_ambiguous_dict_ordering(caching_
     assert isinstance(sanitized, caching.Unhashable)
 
 
+def test_signature_to_hashable_fails_closed_for_opaque_dict_key(caching_module):
+    """Opaque dict keys should fail closed instead of being recursively canonicalized."""
+    caching, _ = caching_module
+
+    sanitized = caching._signature_to_hashable({_OpaqueValue(): 1})
+
+    assert isinstance(sanitized, caching.Unhashable)
+
+
 def test_signature_to_hashable_fails_closed_on_dict_key_sort_collisions_even_with_distinct_values(caching_module, monkeypatch):
     """Different values must not mask dict key-sort collisions during canonicalization."""
     caching, _ = caching_module

@@ -179,9 +179,9 @@ def _signature_to_hashable_impl(obj, depth=0, max_depth=_MAX_SIGNATURE_DEPTH, ac
 
             ordered_items = []
             for key, value in items:
-                key_result = _signature_to_hashable_impl(key, depth + 1, max_depth, active, memo, budget)
-                if key_result is _FAILED_SIGNATURE:
+                if type(key) not in _PRIMITIVE_SIGNATURE_TYPES:
                     return _FAILED_SIGNATURE
+                key_result = (key, _primitive_signature_sort_key(key))
                 value_result = _signature_to_hashable_impl(value, depth + 1, max_depth, active, memo, budget)
                 if value_result is _FAILED_SIGNATURE:
                     return _FAILED_SIGNATURE
