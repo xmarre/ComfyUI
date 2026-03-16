@@ -275,7 +275,8 @@ def to_hashable(obj, max_nodes=_MAX_SIGNATURE_CONTAINER_VISITS):
     snapshots = {}
     sort_memo = {}
     processed = 0
-    stack = [(obj, False)]
+    # Keep traversal state separate from container snapshots/results.
+    work_stack = [(obj, False)]
 
     def resolve_value(value):
         """Resolve a child value from the completed memo table when available."""
@@ -309,8 +310,8 @@ def to_hashable(obj, max_nodes=_MAX_SIGNATURE_CONTAINER_VISITS):
 
         return (container_tag, tuple(value for _, value in ordered_items))
 
-    while stack:
-        current, expanded = stack.pop()
+    while work_stack:
+        current, expanded = work_stack.pop()
         current_type = type(current)
 
         if current_type in _PRIMITIVE_SIGNATURE_TYPES or current_type is Unhashable:
@@ -388,7 +389,7 @@ def to_hashable(obj, max_nodes=_MAX_SIGNATURE_CONTAINER_VISITS):
             return Unhashable()
 
         active.add(current_id)
-        stack.append((current, True))
+        work_stack.append((current, True))
         if current_type is dict:
             try:
                 items = list(current.items())
@@ -398,8 +399,8 @@ def to_hashable(obj, max_nodes=_MAX_SIGNATURE_CONTAINER_VISITS):
                 active.discard(current_id)
                 continue
             for key, value in reversed(items):
-                stack.append((value, False))
-                stack.append((key, False))
+                work_stack.append((value, False))
+                work_stack.append((key, False))
         else:
             try:
                 items = list(current)
@@ -409,7 +410,7 @@ def to_hashable(obj, max_nodes=_MAX_SIGNATURE_CONTAINER_VISITS):
                 active.discard(current_id)
                 continue
             for item in reversed(items):
-                stack.append((item, False))
+                work_stack.append((item, False))
 
     return memo.get(id(obj), Unhashable())
 

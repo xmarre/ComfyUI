@@ -49,6 +49,21 @@ def test_get_immediate_node_signature_canonicalizes_non_link_inputs(monkeypatch)
     )
 
 
+def test_to_hashable_walks_dicts_without_rebinding_traversal_stack():
+    live_value = {
+        "outer": {"nested": [2, 3]},
+        "items": [{"leaf": 4}],
+    }
+
+    assert caching.to_hashable(live_value) == (
+        "dict",
+        (
+            ("items", ("list", (("dict", (("leaf", 4),)),))),
+            ("outer", ("dict", (("nested", ("list", (2, 3))),))),
+        ),
+    )
+
+
 def test_get_immediate_node_signature_fails_closed_for_opaque_non_link_input(monkeypatch):
     class OpaqueRuntimeValue:
         pass
