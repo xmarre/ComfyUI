@@ -465,9 +465,9 @@ class CacheKeySetInputSignature(CacheKeySet):
     async def get_immediate_node_signature(self, dynprompt, node_id, ancestor_order_mapping):
         """Build the immediate cache-signature fragment for a node.
 
-        Link inputs are reduced to ancestor references here, while non-link
-        values are appended as-is. Full canonicalization happens later in
-        `get_node_signature()` via `_signature_to_hashable()`.
+        Link inputs are reduced to ancestor references here. Non-link values
+        are canonicalized or failed closed before being appended so the outer
+        node-signature pass never recurses into live prompt input containers.
         """
         if not dynprompt.has_node(node_id):
             # This node doesn't exist -- we can't cache it.
@@ -485,7 +485,7 @@ class CacheKeySetInputSignature(CacheKeySet):
                 ancestor_index = ancestor_order_mapping[ancestor_id]
                 signature.append((key,("ANCESTOR", ancestor_index, ancestor_socket)))
             else:
-                signature.append((key, inputs[key]))
+                signature.append((key, to_hashable(inputs[key])))
         return signature
 
     # This function returns a list of all ancestors of the given node. The order of the list is
