@@ -467,9 +467,15 @@ class CacheKeySetInputSignature(CacheKeySet):
         """Build the full cache signature for a node and its ordered ancestors."""
         signature = []
         ancestors, order_mapping = self.get_ordered_ancestry(dynprompt, node_id)
-        signature.append(await self.get_immediate_node_signature(dynprompt, node_id, order_mapping))
+        immediate = await self.get_immediate_node_signature(dynprompt, node_id, order_mapping)
+        if type(immediate) is Unhashable:
+            return immediate
+        signature.append(immediate)
         for ancestor_id in ancestors:
-            signature.append(await self.get_immediate_node_signature(dynprompt, ancestor_id, order_mapping))
+            immediate = await self.get_immediate_node_signature(dynprompt, ancestor_id, order_mapping)
+            if type(immediate) is Unhashable:
+                return immediate
+            signature.append(immediate)
         return tuple(signature)
 
     async def get_immediate_node_signature(self, dynprompt, node_id, ancestor_order_mapping):
@@ -485,7 +491,10 @@ class CacheKeySetInputSignature(CacheKeySet):
         node = dynprompt.get_node(node_id)
         class_type = node["class_type"]
         class_def = nodes.NODE_CLASS_MAPPINGS[class_type]
-        signature = [class_type, _shallow_is_changed_signature(await self.is_changed_cache.get(node_id))]
+        is_changed_signature = _shallow_is_changed_signature(await self.is_changed_cache.get(node_id))
+        if type(is_changed_signature) is Unhashable:
+            return is_changed_signature
+        signature = [class_type, is_changed_signature]
         if self.include_node_id_in_input() or (hasattr(class_def, "NOT_IDEMPOTENT") and class_def.NOT_IDEMPOTENT) or include_unique_id_in_input(class_type):
             signature.append(node_id)
         inputs = node["inputs"]
@@ -495,7 +504,10 @@ class CacheKeySetInputSignature(CacheKeySet):
                 ancestor_index = ancestor_order_mapping[ancestor_id]
                 signature.append((key,("ANCESTOR", ancestor_index, ancestor_socket)))
             else:
-                signature.append((key, to_hashable(inputs[key])))
+                value_signature = to_hashable(inputs[key])
+                if type(value_signature) is Unhashable:
+                    return value_signature
+                signature.append((key, value_signature))
         return tuple(signature)
 
     # This function returns a list of all ancestors of the given node. The order of the list is

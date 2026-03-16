@@ -386,8 +386,8 @@ def test_shallow_is_changed_signature_fails_closed_for_opaque_payload(caching_mo
     assert isinstance(sanitized, caching.Unhashable)
 
 
-def test_get_immediate_node_signature_marks_recursive_is_changed_unhashable(caching_module, monkeypatch):
-    """Recursive `is_changed` payloads should be cut off before signature canonicalization."""
+def test_get_immediate_node_signature_fails_closed_for_unhashable_is_changed(caching_module, monkeypatch):
+    """Recursive `is_changed` payloads should fail the full fragment closed."""
     caching, nodes_module = caching_module
     monkeypatch.setitem(nodes_module.NODE_CLASS_MAPPINGS, "UnitTestNode", _DummyNode)
 
@@ -409,4 +409,4 @@ def test_get_immediate_node_signature_marks_recursive_is_changed_unhashable(cach
 
     signature = asyncio.run(key_set.get_immediate_node_signature(dynprompt, "node", {}))
 
-    assert isinstance(signature[1], caching.Unhashable)
+    assert isinstance(signature, caching.Unhashable)

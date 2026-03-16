@@ -84,9 +84,29 @@ def test_get_immediate_node_signature_fails_closed_for_opaque_non_link_input(mon
     keyset = caching.CacheKeySetInputSignature(dynprompt, [], _StubIsChangedCache())
     signature = asyncio.run(keyset.get_immediate_node_signature(dynprompt, "1", {}))
 
-    assert signature[:2] == ("TestCacheNode", None)
-    assert signature[2][0] == "value"
-    assert type(signature[2][1]) is caching.Unhashable
+    assert isinstance(signature, caching.Unhashable)
+
+
+def test_get_node_signature_propagates_unhashable_immediate_fragment(monkeypatch):
+    class OpaqueRuntimeValue:
+        pass
+
+    dynprompt = _StubDynPrompt(
+        {
+            "1": {
+                "class_type": "TestCacheNode",
+                "inputs": {"value": OpaqueRuntimeValue()},
+            }
+        }
+    )
+
+    monkeypatch.setitem(caching.nodes.NODE_CLASS_MAPPINGS, "TestCacheNode", _StubNode)
+    monkeypatch.setattr(caching, "NODE_CLASS_CONTAINS_UNIQUE_ID", {})
+
+    keyset = caching.CacheKeySetInputSignature(dynprompt, [], _StubIsChangedCache())
+    signature = asyncio.run(keyset.get_node_signature(dynprompt, "1"))
+
+    assert isinstance(signature, caching.Unhashable)
 
 
 def test_get_node_signature_never_visits_raw_non_link_input(monkeypatch):
