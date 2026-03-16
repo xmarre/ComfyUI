@@ -205,6 +205,26 @@ def test_to_hashable_handles_shared_builtin_substructures(caching_module):
     assert hashable[1][0][0] == "list"
 
 
+def test_to_hashable_uses_parent_snapshot_during_expanded_phase(caching_module, monkeypatch):
+    """Expanded-phase assembly should not reread a live parent container after snapshotting."""
+    caching, _ = caching_module
+    original_sort_key = caching._sanitized_sort_key
+    outer = [{"marker"}, 2]
+
+    def mutating_sort_key(obj, *args, **kwargs):
+        """Mutate the live parent while a child container is being canonicalized."""
+        if obj == "marker":
+            outer[1] = 3
+        return original_sort_key(obj, *args, **kwargs)
+
+    monkeypatch.setattr(caching, "_sanitized_sort_key", mutating_sort_key)
+
+    hashable = caching.to_hashable(outer)
+
+    assert hashable == ("list", (("set", ("marker",)), 2))
+    assert outer[1] == 3
+
+
 def test_to_hashable_fails_closed_for_ordered_container_with_opaque_child(caching_module):
     """Ordered containers should fail closed when a child cannot be canonicalized."""
     caching, _ = caching_module

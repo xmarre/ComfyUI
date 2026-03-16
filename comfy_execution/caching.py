@@ -311,26 +311,34 @@ def to_hashable(obj, max_nodes=_MAX_SIGNATURE_CONTAINER_VISITS):
         return (container_tag, tuple(value for _, value in ordered_items))
 
     while work_stack:
-        current, expanded = work_stack.pop()
-        current_type = type(current)
+        entry = work_stack.pop()
+        if len(entry) == 3:
+            _, current_id, current_type = entry
+            current = None
+            expanded = True
+        else:
+            current, expanded = entry
+            current_type = type(current)
+            current_id = id(current)
 
-        if current_type in _PRIMITIVE_SIGNATURE_TYPES or current_type is Unhashable:
+        if not expanded and (current_type in _PRIMITIVE_SIGNATURE_TYPES or current_type is Unhashable):
             continue
-        if current_type not in _CONTAINER_SIGNATURE_TYPES:
-            memo[id(current)] = Unhashable()
+        if not expanded and current_type not in _CONTAINER_SIGNATURE_TYPES:
+            memo[current_id] = Unhashable()
             continue
 
-        current_id = id(current)
         if current_id in memo:
             continue
 
         if expanded:
             active.discard(current_id)
             try:
+                items = snapshots.pop(current_id, None)
+                if items is None:
+                    memo[current_id] = Unhashable()
+                    continue
+
                 if current_type is dict:
-                    items = snapshots.pop(current_id, None)
-                    if items is None:
-                        items = list(current.items())
                     ordered_items = [
                         (_sanitized_sort_key(k, memo=sort_memo), k, resolve_value(v))
                         for k, v in items
@@ -349,32 +357,20 @@ def to_hashable(obj, max_nodes=_MAX_SIGNATURE_CONTAINER_VISITS):
                             tuple((key, value) for _, key, value in ordered_items),
                         )
                 elif current_type is list:
-                    items = snapshots.pop(current_id, None)
-                    if items is None:
-                        items = list(current)
                     resolved_items = tuple(resolve_value(item) for item in items)
                     if any(is_failed(item) for item in resolved_items):
                         memo[current_id] = Unhashable()
                     else:
                         memo[current_id] = ("list", resolved_items)
                 elif current_type is tuple:
-                    items = snapshots.pop(current_id, None)
-                    if items is None:
-                        items = list(current)
                     resolved_items = tuple(resolve_value(item) for item in items)
                     if any(is_failed(item) for item in resolved_items):
                         memo[current_id] = Unhashable()
                     else:
                         memo[current_id] = ("tuple", resolved_items)
                 elif current_type is set:
-                    items = snapshots.pop(current_id, None)
-                    if items is None:
-                        items = list(current)
                     memo[current_id] = resolve_unordered_values(items, "set")
                 else:
-                    items = snapshots.pop(current_id, None)
-                    if items is None:
-                        items = list(current)
                     memo[current_id] = resolve_unordered_values(items, "frozenset")
             except RuntimeError:
                 memo[current_id] = Unhashable()
@@ -389,7 +385,6 @@ def to_hashable(obj, max_nodes=_MAX_SIGNATURE_CONTAINER_VISITS):
             return Unhashable()
 
         active.add(current_id)
-        work_stack.append((current, True))
         if current_type is dict:
             try:
                 items = list(current.items())
@@ -405,6 +400,7 @@ def to_hashable(obj, max_nodes=_MAX_SIGNATURE_CONTAINER_VISITS):
                     active.discard(current_id)
                     break
             else:
+                work_stack.append(("EXPANDED", current_id, current_type))
                 for _, value in reversed(items):
                     work_stack.append((value, False))
                 continue
@@ -417,6 +413,7 @@ def to_hashable(obj, max_nodes=_MAX_SIGNATURE_CONTAINER_VISITS):
                 memo[current_id] = Unhashable()
                 active.discard(current_id)
                 continue
+            work_stack.append(("EXPANDED", current_id, current_type))
             for item in reversed(items):
                 work_stack.append((item, False))
 
