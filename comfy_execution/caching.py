@@ -332,10 +332,10 @@ def to_hashable(obj, max_nodes=_MAX_SIGNATURE_CONTAINER_VISITS):
                     if items is None:
                         items = list(current.items())
                     ordered_items = [
-                        (_sanitized_sort_key(k, memo=sort_memo), resolve_value(k), resolve_value(v))
+                        (_sanitized_sort_key(k, memo=sort_memo), k, resolve_value(v))
                         for k, v in items
                     ]
-                    if any(is_failed(key) or is_failed(value) for _, key, value in ordered_items):
+                    if any(type(key) not in _PRIMITIVE_SIGNATURE_TYPES or is_failed(value) for _, key, value in ordered_items):
                         memo[current_id] = Unhashable()
                         continue
                     ordered_items.sort(key=lambda item: item[0])
@@ -398,9 +398,17 @@ def to_hashable(obj, max_nodes=_MAX_SIGNATURE_CONTAINER_VISITS):
                 memo[current_id] = Unhashable()
                 active.discard(current_id)
                 continue
-            for key, value in reversed(items):
-                work_stack.append((value, False))
-                work_stack.append((key, False))
+            for key, value in items:
+                if type(key) not in _PRIMITIVE_SIGNATURE_TYPES:
+                    snapshots.pop(current_id, None)
+                    memo[current_id] = Unhashable()
+                    active.discard(current_id)
+                    break
+            else:
+                for _, value in reversed(items):
+                    work_stack.append((value, False))
+                continue
+            continue
         else:
             try:
                 items = list(current)

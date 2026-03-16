@@ -225,6 +225,15 @@ def test_to_hashable_canonicalizes_dict_insertion_order(caching_module):
     assert caching.to_hashable(first) == caching.to_hashable(second)
 
 
+def test_to_hashable_fails_closed_for_opaque_dict_key(caching_module):
+    """Opaque dict keys should fail closed instead of being traversed during hashing."""
+    caching, _ = caching_module
+
+    hashable = caching.to_hashable({_OpaqueValue(): 1})
+
+    assert isinstance(hashable, caching.Unhashable)
+
+
 @pytest.mark.parametrize(
     "container_factory",
     [
