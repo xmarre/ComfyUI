@@ -170,7 +170,7 @@ def test_signature_to_hashable_snapshots_dict_before_recursing(caching_module, m
         lambda marker: (marker,),
         lambda marker: {marker},
         lambda marker: frozenset({marker}),
-        lambda marker: {marker: "value"},
+        lambda marker: {"key": marker},
     ],
 )
 def test_signature_to_hashable_fails_closed_on_runtimeerror(caching_module, monkeypatch, container_factory):
@@ -276,26 +276,38 @@ def test_to_hashable_fails_closed_on_runtimeerror(caching_module, monkeypatch, c
     assert isinstance(hashable, caching.Unhashable)
 
 
-def test_to_hashable_fails_closed_for_ambiguous_dict_ordering(caching_module):
+def test_to_hashable_fails_closed_for_ambiguous_dict_ordering(caching_module, monkeypatch):
     """Ambiguous dict key ordering should fail closed instead of using insertion order."""
     caching, _ = caching_module
-    ambiguous = {
-        _OpaqueValue(): 1,
-        _OpaqueValue(): 2,
-    }
+    original_sort_key = caching._sanitized_sort_key
+    ambiguous = {"a": 1, "b": 1}
+
+    def colliding_sort_key(obj, *args, **kwargs):
+        """Force two distinct primitive keys to share the same ordering key."""
+        if obj == "a" or obj == "b":
+            return ("COLLIDE",)
+        return original_sort_key(obj, *args, **kwargs)
+
+    monkeypatch.setattr(caching, "_sanitized_sort_key", colliding_sort_key)
 
     hashable = caching.to_hashable(ambiguous)
 
     assert isinstance(hashable, caching.Unhashable)
 
 
-def test_signature_to_hashable_fails_closed_for_ambiguous_dict_ordering(caching_module):
+def test_signature_to_hashable_fails_closed_for_ambiguous_dict_ordering(caching_module, monkeypatch):
     """Ambiguous dict sort ties should fail closed instead of depending on input order."""
     caching, _ = caching_module
-    ambiguous = {
-        _OpaqueValue(): _OpaqueValue(),
-        _OpaqueValue(): _OpaqueValue(),
-    }
+    original_sort_key = caching._primitive_signature_sort_key
+    ambiguous = {"a": 1, "b": 1}
+
+    def colliding_sort_key(obj):
+        """Force two distinct primitive keys to share the same ordering key."""
+        if obj == "a" or obj == "b":
+            return ("COLLIDE",)
+        return original_sort_key(obj)
+
+    monkeypatch.setattr(caching, "_primitive_signature_sort_key", colliding_sort_key)
 
     sanitized = caching._signature_to_hashable(ambiguous)
 
@@ -314,21 +326,17 @@ def test_signature_to_hashable_fails_closed_for_opaque_dict_key(caching_module):
 def test_signature_to_hashable_fails_closed_on_dict_key_sort_collisions_even_with_distinct_values(caching_module, monkeypatch):
     """Different values must not mask dict key-sort collisions during canonicalization."""
     caching, _ = caching_module
-    original = caching._signature_to_hashable_impl
-    key_a = object()
-    key_b = object()
+    original_sort_key = caching._primitive_signature_sort_key
 
-    def colliding_key_canonicalize(obj, *args, **kwargs):
-        """Force two distinct raw keys to share the same canonical sort key."""
-        if obj is key_a:
-            return ("key-a", ("COLLIDE",))
-        if obj is key_b:
-            return ("key-b", ("COLLIDE",))
-        return original(obj, *args, **kwargs)
+    def colliding_sort_key(obj):
+        """Force two distinct primitive keys to share the same ordering key."""
+        if obj == "a" or obj == "b":
+            return ("COLLIDE",)
+        return original_sort_key(obj)
 
-    monkeypatch.setattr(caching, "_signature_to_hashable_impl", colliding_key_canonicalize)
+    monkeypatch.setattr(caching, "_primitive_signature_sort_key", colliding_sort_key)
 
-    sanitized = caching._signature_to_hashable({key_a: 1, key_b: 2})
+    sanitized = caching._signature_to_hashable({"a": 1, "b": 2})
 
     assert isinstance(sanitized, caching.Unhashable)
 
@@ -340,10 +348,19 @@ def test_signature_to_hashable_fails_closed_on_dict_key_sort_collisions_even_wit
         frozenset,
     ],
 )
-def test_to_hashable_fails_closed_for_ambiguous_unordered_values(caching_module, container_factory):
+def test_to_hashable_fails_closed_for_ambiguous_unordered_values(caching_module, monkeypatch, container_factory):
     """Ambiguous unordered values should fail closed instead of depending on iteration order."""
     caching, _ = caching_module
-    container = container_factory({_OpaqueValue(), _OpaqueValue()})
+    original_sort_key = caching._sanitized_sort_key
+    container = container_factory({"a", "b"})
+
+    def colliding_sort_key(obj, *args, **kwargs):
+        """Force two distinct primitive values to share the same ordering key."""
+        if obj == "a" or obj == "b":
+            return ("COLLIDE",)
+        return original_sort_key(obj, *args, **kwargs)
+
+    monkeypatch.setattr(caching, "_sanitized_sort_key", colliding_sort_key)
 
     hashable = caching.to_hashable(container)
 
@@ -437,5 +454,20 @@ def test_get_immediate_node_signature_fails_closed_for_unhashable_is_changed(cac
     )
 
     signature = asyncio.run(key_set.get_immediate_node_signature(dynprompt, "node", {}))
+
+    assert isinstance(signature, caching.Unhashable)
+
+
+def test_get_immediate_node_signature_fails_closed_for_missing_node(caching_module):
+    """Missing nodes should return the fail-closed sentinel instead of a NaN tuple."""
+    caching, _ = caching_module
+    dynprompt = _FakeDynPrompt({})
+    key_set = caching.CacheKeySetInputSignature(
+        dynprompt,
+        [],
+        _FakeIsChangedCache({}),
+    )
+
+    signature = asyncio.run(key_set.get_immediate_node_signature(dynprompt, "missing", {}))
 
     assert isinstance(signature, caching.Unhashable)

@@ -484,7 +484,7 @@ class CacheKeySetInputSignature(CacheKeySet):
         """
         if not dynprompt.has_node(node_id):
             # This node doesn't exist -- we can't cache it.
-            return (float("NaN"),)
+            return Unhashable()
         node = dynprompt.get_node(node_id)
         class_type = node["class_type"]
         class_def = nodes.NODE_CLASS_MAPPINGS[class_type]
