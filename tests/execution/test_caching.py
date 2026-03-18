@@ -25,6 +25,34 @@ class _StubNode:
         return {"required": {}}
 
 
+def test_shallow_is_changed_signature_keeps_primitive_only_list_shallow():
+    assert caching._shallow_is_changed_signature([1, "two", None, True]) == (
+        "is_changed_list",
+        (1, "two", None, True),
+    )
+
+
+def test_shallow_is_changed_signature_keeps_primitive_only_tuple_shallow():
+    assert caching._shallow_is_changed_signature((1, "two", None, True)) == (
+        "is_changed_tuple",
+        (1, "two", None, True),
+    )
+
+
+def test_shallow_is_changed_signature_fails_closed_for_nested_container(monkeypatch):
+    monkeypatch.setattr(
+        caching,
+        "to_hashable",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("is_changed signature must not deep-canonicalize")
+        ),
+    )
+
+    signature = caching._shallow_is_changed_signature([1, [2, 3]])
+
+    assert isinstance(signature, caching.Unhashable)
+
+
 def test_get_immediate_node_signature_canonicalizes_non_link_inputs(monkeypatch):
     live_value = [1, {"nested": [2, 3]}]
     dynprompt = _StubDynPrompt(
