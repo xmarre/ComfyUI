@@ -68,15 +68,17 @@ _FAILED_SIGNATURE = object()
 
 
 def _shallow_is_changed_signature(value):
-    """Sanitize execution-time `is_changed` values with a small fail-closed budget."""
+    """Reduce execution-time `is_changed` values through a fail-closed builtin canonicalizer."""
     value_type = type(value)
     if value_type in _PRIMITIVE_SIGNATURE_TYPES:
         return value
 
-    canonical = to_hashable(value, max_nodes=64)
+    if value_type not in _CONTAINER_SIGNATURE_TYPES:
+        return Unhashable()
+
+    canonical = _signature_to_hashable(value, max_nodes=64)
     if type(canonical) is Unhashable:
         return canonical
-
     if value_type is list or value_type is tuple:
         container_tag = "is_changed_list" if value_type is list else "is_changed_tuple"
         return (container_tag, canonical[1])
