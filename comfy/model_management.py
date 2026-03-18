@@ -541,6 +541,7 @@ class LoadedModel:
         if model.parent is not None:
             self._parent_model = weakref.ref(model.parent)
             self._patcher_finalizer = weakref.finalize(model, self._switch_parent)
+            self._patcher_finalizer.atexit = False
 
     def _switch_parent(self):
         model = self._parent_model()
@@ -587,6 +588,7 @@ class LoadedModel:
 
         self.real_model = weakref.ref(real_model)
         self.model_finalizer = weakref.finalize(real_model, cleanup_models)
+        self.model_finalizer.atexit = False
         return real_model
 
     def should_reload_model(self, force_patch_weights=False):
@@ -1001,7 +1003,7 @@ def text_encoder_offload_device():
 def text_encoder_device():
     if args.gpu_only:
         return get_torch_device()
-    elif vram_state in (VRAMState.HIGH_VRAM, VRAMState.NORMAL_VRAM) or comfy.memory_management.aimdo_enabled:
+    elif vram_state in (VRAMState.HIGH_VRAM, VRAMState.NORMAL_VRAM, VRAMState.SHARED) or comfy.memory_management.aimdo_enabled:
         if should_use_fp16(prioritize_performance=False):
             return get_torch_device()
         else:
