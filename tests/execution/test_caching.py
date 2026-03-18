@@ -39,7 +39,17 @@ def test_shallow_is_changed_signature_keeps_primitive_only_tuple_shallow():
     )
 
 
-def test_shallow_is_changed_signature_fails_closed_for_nested_container(monkeypatch):
+def test_shallow_is_changed_signature_keeps_structured_builtin_fingerprint_list():
+    assert caching._shallow_is_changed_signature([("seed", 42), {"cfg": 8}]) == (
+        "is_changed_list",
+        (
+            ("tuple", ("seed", 42)),
+            ("dict", (("cfg", 8),)),
+        ),
+    )
+
+
+def test_shallow_is_changed_signature_does_not_use_to_hashable(monkeypatch):
     monkeypatch.setattr(
         caching,
         "to_hashable",
@@ -48,9 +58,15 @@ def test_shallow_is_changed_signature_fails_closed_for_nested_container(monkeypa
         ),
     )
 
-    signature = caching._shallow_is_changed_signature([1, [2, 3]])
+    signature = caching._shallow_is_changed_signature([("seed", 42), {"cfg": 8}])
 
-    assert isinstance(signature, caching.Unhashable)
+    assert signature == (
+        "is_changed_list",
+        (
+            ("tuple", ("seed", 42)),
+            ("dict", (("cfg", 8),)),
+        ),
+    )
 
 
 def test_get_immediate_node_signature_canonicalizes_non_link_inputs(monkeypatch):
