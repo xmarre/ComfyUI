@@ -78,6 +78,30 @@ def cond_has_hooks(cond):
                 return True
     return False
 
+
+def hook_group_requires_non_dynamic_patcher(hooks: comfy.hooks.HookGroup | None):
+    if hooks is None:
+        return False
+
+    for hook in hooks.hooks:
+        if hook.hook_type == comfy.hooks.EnumHookType.Weight:
+            return True
+
+    return False
+
+
+def cond_requires_non_dynamic_patcher(cond):
+    for c in cond:
+        temp = c[1]
+        if hook_group_requires_non_dynamic_patcher(temp.get("hooks", None)):
+            return True
+        if "control" in temp:
+            control = temp["control"]
+            for extra_hooks in control.get_extra_hooks():
+                if hook_group_requires_non_dynamic_patcher(extra_hooks):
+                    return True
+    return False
+
 def get_additional_models(conds, dtype):
     """loads additional models in conditioning"""
     cnets: list[ControlBase] = []
