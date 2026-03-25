@@ -947,6 +947,11 @@ class CFGGuider:
     def inner_set_conds(self, conds):
         for k in conds:
             if self.model_patcher.is_dynamic() and comfy.sampler_helpers.cond_requires_non_dynamic_patcher(conds[k]):
+                logging.warning(
+                    "DynamicVRAM delegating cond '%s' to non-dynamic patcher due to unsupported hooks: %s",
+                    k,
+                    comfy.sampler_helpers.describe_non_dynamic_patcher_requirements(conds[k]),
+                )
                 self.model_patcher = self.model_patcher.get_non_dynamic_delegate()
             self.original_conds[k] = comfy.sampler_helpers.convert_cond(conds[k])
 
