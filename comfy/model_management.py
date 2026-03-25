@@ -179,6 +179,9 @@ def is_ixuca():
     return False
 
 def is_wsl():
+    if "WSL_DISTRO_NAME" in os.environ:
+        return True
+
     version = platform.uname().release
     if version.endswith("-Microsoft"):
         return True

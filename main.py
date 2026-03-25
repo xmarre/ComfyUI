@@ -207,6 +207,17 @@ import hook_breaker_ac10a0
 import comfy.memory_management
 import comfy.model_patcher
 
+if (
+    (not args.enable_dynamic_vram)
+    and enables_dynamic_vram()
+    and comfy.model_management.is_nvidia()
+    and comfy.model_management.is_wsl()
+):
+    logging.warning(
+        "DynamicVRAM is disabled by default on WSL. Increase the WSL VM memory limit if needed "
+        "and pass --enable-dynamic-vram to override."
+    )
+
 if args.enable_dynamic_vram or (enables_dynamic_vram() and comfy.model_management.is_nvidia() and not comfy.model_management.is_wsl()):
     if (not args.enable_dynamic_vram) and (comfy.model_management.torch_version_numeric < (2, 8)):
         logging.warning("Unsupported Pytorch detected. DynamicVRAM support requires Pytorch version 2.8 or later. Falling back to legacy ModelPatcher. VRAM estimates may be unreliable especially on Windows")
