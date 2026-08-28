@@ -61,7 +61,8 @@ def caching_module(monkeypatch):
 
     module = importlib.import_module("comfy_execution.caching")
     module = importlib.reload(module)
-    return module, nodes_module
+    yield module, nodes_module
+    sys.modules.pop("comfy_execution.caching", None)
 
 
 def _primitive(value):
@@ -426,6 +427,71 @@ def test_get_node_signature_fails_closed_when_ancestry_snapshot_fails_once(
         dynprompt,
         ["node"],
         _FakeIsChangedCache({"node": None}),
+    )
+
+    signature = asyncio.run(key_set.get_node_signature(dynprompt, "node"))
+
+    assert isinstance(signature, caching.Unhashable)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["replace", "mutate_in_place", "remove", "become_link"],
+)
+def test_get_node_signature_fails_closed_when_snapshotted_non_link_input_changes(
+    caching_module,
+    monkeypatch,
+    mutation,
+):
+    caching, nodes_module = caching_module
+    monkeypatch.setitem(nodes_module.NODE_CLASS_MAPPINGS, "UnitTestNode", _DummyNode)
+
+    node_inputs = {"value": {"nested": [1]}}
+    dynprompt = _FakeDynPrompt(
+        {
+            "node": {
+                "class_type": "UnitTestNode",
+                "inputs": node_inputs,
+            },
+            "ancestor": {
+                "class_type": "UnitTestNode",
+                "inputs": {},
+            },
+        }
+    )
+    key_set = caching.CacheKeySetInputSignature(
+        dynprompt,
+        ["node"],
+        _FakeIsChangedCache({"node": None, "ancestor": None}),
+    )
+    original = key_set._get_immediate_node_signature
+
+    async def mutate_before_immediate(
+        current_dynprompt,
+        current_node_id,
+        ancestor_order_mapping,
+        input_items,
+    ):
+        if current_node_id == "node":
+            if mutation == "replace":
+                node_inputs["value"] = {"nested": [2]}
+            elif mutation == "mutate_in_place":
+                node_inputs["value"]["nested"].append(2)
+            elif mutation == "remove":
+                del node_inputs["value"]
+            else:
+                node_inputs["value"] = ["ancestor", 0]
+        return await original(
+            current_dynprompt,
+            current_node_id,
+            ancestor_order_mapping,
+            input_items,
+        )
+
+    monkeypatch.setattr(
+        key_set,
+        "_get_immediate_node_signature",
+        mutate_before_immediate,
     )
 
     signature = asyncio.run(key_set.get_node_signature(dynprompt, "node"))

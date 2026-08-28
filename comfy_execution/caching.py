@@ -236,6 +236,31 @@ def _shallow_is_changed_signature(value):
 
     return canonical
 
+def _snapshot_input_items(inputs):
+    """Capture a deterministic, canonical snapshot of a node input mapping."""
+    try:
+        input_items = list(inputs.items())
+    except RuntimeError:
+        return None
+
+    if any(type(key) is not str for key, _ in input_items):
+        return None
+    input_items.sort(key=lambda item: item[0])
+
+    snapshot = []
+    for key, input_value in input_items:
+        if is_link(input_value):
+            snapshot.append((key, ("link", input_value[0], input_value[1])))
+            continue
+
+        value_signature = to_hashable(input_value)
+        if type(value_signature) is Unhashable:
+            return None
+        snapshot.append((key, ("value", value_signature)))
+
+    return tuple(snapshot)
+
+
 class CacheKeySetID(CacheKeySet):
     def __init__(self, dynprompt, node_ids, is_changed_cache):
         super().__init__(dynprompt, node_ids, is_changed_cache)
@@ -324,39 +349,24 @@ class CacheKeySetInputSignature(CacheKeySet):
         if self.include_node_id_in_input() or (hasattr(class_def, "NOT_IDEMPOTENT") and class_def.NOT_IDEMPOTENT) or include_unique_id_in_input(class_type):
             signature.append(node_id)
 
-        inputs = node["inputs"]
+        live_items = _snapshot_input_items(node["inputs"])
+        if live_items is None:
+            return Unhashable()
         if input_items is None:
-            try:
-                input_items = list(inputs.items())
-            except RuntimeError:
-                return Unhashable()
+            input_items = live_items
+        elif live_items != input_items:
+            return Unhashable()
 
-            if any(type(key) is not str for key, _ in input_items):
-                return Unhashable()
-            input_items.sort(key=lambda item: item[0])
-        else:
-            for key, snapshot_value in input_items:
-                if not is_link(snapshot_value):
-                    continue
-                try:
-                    live_value = inputs[key]
-                except (KeyError, TypeError):
-                    return Unhashable()
-                if not is_link(live_value) or live_value != snapshot_value:
-                    return Unhashable()
-
-        for key, input_value in input_items:
-            if is_link(input_value):
-                ancestor_id, ancestor_socket = input_value
+        for key, input_snapshot in input_items:
+            input_kind = input_snapshot[0]
+            if input_kind == "link":
+                _, ancestor_id, ancestor_socket = input_snapshot
                 ancestor_index = ancestor_order_mapping.get(ancestor_id)
                 if ancestor_index is None:
                     return Unhashable()
                 signature.append((key, ("ANCESTOR", ancestor_index, ancestor_socket)))
             else:
-                value_signature = to_hashable(input_value)
-                if type(value_signature) is Unhashable:
-                    return value_signature
-                signature.append((key, value_signature))
+                signature.append((key, input_snapshot[1]))
 
         return tuple(signature)
 
@@ -369,34 +379,31 @@ class CacheKeySetInputSignature(CacheKeySet):
         return ancestors, order_mapping
 
     def get_ordered_ancestry_internal(self, dynprompt, node_id, ancestors, order_mapping):
-        if not dynprompt.has_node(node_id):
-            return
-        inputs = dynprompt.get_node(node_id)["inputs"]
-        input_keys = sorted(inputs.keys())
-        for key in input_keys:
-            if is_link(inputs[key]):
-                ancestor_id = inputs[key][0]
-                if ancestor_id not in order_mapping:
-                    ancestors.append(ancestor_id)
-                    order_mapping[ancestor_id] = len(ancestors) - 1
-                    self.get_ordered_ancestry_internal(dynprompt, ancestor_id, ancestors, order_mapping)
-
-    def _get_ordered_ancestry_snapshot(self, dynprompt, node_id):
-        """Return ancestry plus stable top-level input snapshots for signature building."""
-        ancestors = []
-        order_mapping = {}
-        input_snapshots = {}
-        if not self._get_ordered_ancestry_snapshot_internal(
+        """Populate ancestry using the legacy public-helper traversal contract."""
+        self._walk_ordered_ancestry(
             dynprompt,
             node_id,
             ancestors,
             order_mapping,
-            input_snapshots,
+            input_snapshots=None,
+        )
+
+    def _get_ordered_ancestry_snapshot(self, dynprompt, node_id):
+        """Return ancestry plus canonical input snapshots for signature building."""
+        ancestors = []
+        order_mapping = {}
+        input_snapshots = {}
+        if not self._walk_ordered_ancestry(
+            dynprompt,
+            node_id,
+            ancestors,
+            order_mapping,
+            input_snapshots=input_snapshots,
         ):
             return None
         return ancestors, order_mapping, input_snapshots
 
-    def _get_ordered_ancestry_snapshot_internal(
+    def _walk_ordered_ancestry(
         self,
         dynprompt,
         node_id,
@@ -404,41 +411,42 @@ class CacheKeySetInputSignature(CacheKeySet):
         order_mapping,
         input_snapshots,
     ):
-        """Collect ancestry while freezing top-level list values used for link recognition."""
+        """Traverse ancestors once, optionally capturing fail-closed input snapshots."""
         if not dynprompt.has_node(node_id):
             return True
 
         inputs = dynprompt.get_node(node_id)["inputs"]
-        try:
-            input_items = list(inputs.items())
-        except RuntimeError:
-            return False
+        if input_snapshots is None:
+            input_items = [(key, inputs[key]) for key in sorted(inputs.keys())]
+            link_items = [
+                input_value[0]
+                for _, input_value in input_items
+                if is_link(input_value)
+            ]
+        else:
+            input_items = _snapshot_input_items(inputs)
+            if input_items is None:
+                return False
+            input_snapshots[node_id] = input_items
+            link_items = [
+                input_snapshot[1]
+                for _, input_snapshot in input_items
+                if input_snapshot[0] == "link"
+            ]
 
-        if any(type(key) is not str for key, _ in input_items):
-            return False
-        input_items.sort(key=lambda item: item[0])
-        input_snapshots[node_id] = tuple(
-            (
-                key,
-                input_value.copy() if is_link(input_value) else input_value,
-            )
-            for key, input_value in input_items
-        )
-
-        for _, input_value in input_snapshots[node_id]:
-            if is_link(input_value):
-                ancestor_id = input_value[0]
-                if ancestor_id not in order_mapping:
-                    ancestors.append(ancestor_id)
-                    order_mapping[ancestor_id] = len(ancestors) - 1
-                    if not self._get_ordered_ancestry_snapshot_internal(
-                        dynprompt,
-                        ancestor_id,
-                        ancestors,
-                        order_mapping,
-                        input_snapshots,
-                    ):
-                        return False
+        for ancestor_id in link_items:
+            if ancestor_id in order_mapping:
+                continue
+            ancestors.append(ancestor_id)
+            order_mapping[ancestor_id] = len(ancestors) - 1
+            if not self._walk_ordered_ancestry(
+                dynprompt,
+                ancestor_id,
+                ancestors,
+                order_mapping,
+                input_snapshots,
+            ):
+                return False
         return True
 
 class BasicCache:
