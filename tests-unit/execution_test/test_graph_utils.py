@@ -9,6 +9,10 @@ def test_is_link_rejects_float_output_index():
     assert not is_link(["node", 0.0])
 
 
+def test_is_link_rejects_negative_output_index():
+    assert not is_link(["node", -1])
+
+
 def test_is_link_rejects_list_subclasses():
     class LinkList(list):
         pass

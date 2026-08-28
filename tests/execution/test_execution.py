@@ -321,8 +321,8 @@ class TestExecution:
         else:
             client.run(g)
 
-    @pytest.mark.parametrize("bad_index", [False, 0.0])
-    def test_validation_rejects_non_integer_link_index(
+    @pytest.mark.parametrize("bad_index", [False, 0.0, -1])
+    def test_validation_rejects_invalid_link_index(
         self,
         bad_index,
         client: ComfyClient,

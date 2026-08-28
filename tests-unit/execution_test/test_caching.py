@@ -60,7 +60,6 @@ def caching_module(monkeypatch):
     monkeypatch.delitem(sys.modules, "comfy_execution.caching", raising=False)
 
     module = importlib.import_module("comfy_execution.caching")
-    module = importlib.reload(module)
     yield module, nodes_module
     sys.modules.pop("comfy_execution.caching", None)
 

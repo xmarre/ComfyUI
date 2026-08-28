@@ -7,6 +7,8 @@ def is_link(obj):
         return False
     if type(obj[1]) is not int:
         return False
+    if obj[1] < 0:
+        return False
     return True
 # The GraphBuilder is just a utility class that outputs graphs in the form expected by the ComfyUI back-end
 class GraphBuilder:
