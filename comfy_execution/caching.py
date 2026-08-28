@@ -1,9 +1,8 @@
 import asyncio
 import bisect
-import itertools
 import time
 import torch
-from typing import Sequence, Mapping, Dict
+from typing import Dict
 from comfy.model_patcher import is_model_patcher_output
 from comfy.system_memory import virtual_memory_available
 from comfy_execution.graph import DynamicPrompt
@@ -48,21 +47,194 @@ class CacheKeySet(ABC):
         return self.subcache_keys.get(node_id, None)
 
 class Unhashable:
+    """Identity sentinel for values that cannot be represented safely in cache keys."""
+
     def __init__(self):
+        # cache_provider._contains_self_unequal() follows .value so external
+        # providers skip fail-closed keys before attempting serialization.
         self.value = float("NaN")
 
-def to_hashable(obj):
-    # So that we don't infinitely recurse since frozenset and tuples
-    # are Sequences.
-    if isinstance(obj, (int, float, str, bool, bytes, type(None))):
-        return obj
-    elif isinstance(obj, Mapping):
-        return frozenset([(to_hashable(k), to_hashable(v)) for k, v in sorted(obj.items())])
-    elif isinstance(obj, Sequence):
-        return frozenset(zip(itertools.count(), [to_hashable(i) for i in obj]))
-    else:
-        # TODO - Support other objects like tensors?
+
+_PRIMITIVE_SIGNATURE_TYPES = (int, float, str, bool, bytes, type(None))
+_CONTAINER_SIGNATURE_TYPES = (dict, list, tuple, set, frozenset)
+_MAX_SIGNATURE_DEPTH = 32
+_MAX_SIGNATURE_CONTAINER_VISITS = 10_000
+_FAILED_SIGNATURE = object()
+
+
+def _primitive_signature_value(obj):
+    """Return a canonical primitive value that preserves the exact Python type."""
+    obj_type = type(obj)
+    return ("primitive", obj_type.__module__, obj_type.__qualname__, obj)
+
+
+def _primitive_signature_sort_key(obj):
+    """Return a deterministic ordering key for a primitive signature value."""
+    obj_type = type(obj)
+    return ("primitive", obj_type.__module__, obj_type.__qualname__, repr(obj))
+
+
+def _canonicalize_signature_impl(
+    obj,
+    depth=0,
+    max_depth=_MAX_SIGNATURE_DEPTH,
+    active=None,
+    memo=None,
+    budget=None,
+):
+    """Canonicalize plain built-ins into a deterministic, hashable representation."""
+    if depth >= max_depth:
+        return _FAILED_SIGNATURE
+
+    obj_type = type(obj)
+    if obj_type in _PRIMITIVE_SIGNATURE_TYPES:
+        return _primitive_signature_value(obj), _primitive_signature_sort_key(obj)
+    if obj_type is Unhashable or obj_type not in _CONTAINER_SIGNATURE_TYPES:
+        return _FAILED_SIGNATURE
+
+    if active is None:
+        active = set()
+    if memo is None:
+        memo = {}
+    if budget is None:
+        budget = {"remaining": _MAX_SIGNATURE_CONTAINER_VISITS}
+
+    obj_id = id(obj)
+    if obj_id in memo:
+        return memo[obj_id]
+    if obj_id in active:
+        return _FAILED_SIGNATURE
+
+    budget["remaining"] -= 1
+    if budget["remaining"] < 0:
+        return _FAILED_SIGNATURE
+
+    active.add(obj_id)
+    try:
+        if obj_type is dict:
+            try:
+                items = list(obj.items())
+            except RuntimeError:
+                return _FAILED_SIGNATURE
+
+            ordered_items = []
+            for key, value in items:
+                if type(key) not in _PRIMITIVE_SIGNATURE_TYPES:
+                    return _FAILED_SIGNATURE
+                ordered_items.append(
+                    (_primitive_signature_sort_key(key), _primitive_signature_value(key), value)
+                )
+
+            ordered_items.sort(key=lambda item: item[0])
+            for index in range(1, len(ordered_items)):
+                if ordered_items[index - 1][0] == ordered_items[index][0]:
+                    return _FAILED_SIGNATURE
+
+            canonical_items = []
+            canonical_sort_items = []
+            for key_sort, key_value, value in ordered_items:
+                value_result = _canonicalize_signature_impl(
+                    value,
+                    depth + 1,
+                    max_depth,
+                    active,
+                    memo,
+                    budget,
+                )
+                if value_result is _FAILED_SIGNATURE:
+                    return _FAILED_SIGNATURE
+                value_value, value_sort = value_result
+                canonical_items.append((key_value, value_value))
+                canonical_sort_items.append((key_sort, value_sort))
+
+            result = (
+                ("dict", tuple(canonical_items)),
+                ("dict", tuple(canonical_sort_items)),
+            )
+        else:
+            try:
+                items = list(obj)
+            except RuntimeError:
+                return _FAILED_SIGNATURE
+
+            child_results = []
+            for item in items:
+                child_result = _canonicalize_signature_impl(
+                    item,
+                    depth + 1,
+                    max_depth,
+                    active,
+                    memo,
+                    budget,
+                )
+                if child_result is _FAILED_SIGNATURE:
+                    return _FAILED_SIGNATURE
+                child_results.append(child_result)
+
+            if obj_type is list or obj_type is tuple:
+                container_tag = "list" if obj_type is list else "tuple"
+                result = (
+                    (container_tag, tuple(value for value, _ in child_results)),
+                    (container_tag, tuple(sort_key for _, sort_key in child_results)),
+                )
+            else:
+                ordered_children = sorted(
+                    ((sort_key, value) for value, sort_key in child_results),
+                    key=lambda item: item[0],
+                )
+                for index in range(1, len(ordered_children)):
+                    if ordered_children[index - 1][0] == ordered_children[index][0]:
+                        return _FAILED_SIGNATURE
+
+                container_tag = "set" if obj_type is set else "frozenset"
+                result = (
+                    (container_tag, tuple(value for _, value in ordered_children)),
+                    (container_tag, tuple(sort_key for sort_key, _ in ordered_children)),
+                )
+    finally:
+        active.discard(obj_id)
+
+    memo[obj_id] = result
+    return result
+
+
+def to_hashable(
+    obj,
+    max_nodes=_MAX_SIGNATURE_CONTAINER_VISITS,
+    max_depth=_MAX_SIGNATURE_DEPTH,
+):
+    """Convert plain built-ins to a stable cache-key representation or fail closed."""
+    try:
+        result = _canonicalize_signature_impl(
+            obj,
+            max_depth=max_depth,
+            budget={"remaining": max_nodes},
+        )
+    except RuntimeError:
         return Unhashable()
+
+    if result is _FAILED_SIGNATURE:
+        return Unhashable()
+    return result[0]
+
+
+def _shallow_is_changed_signature(value):
+    """Canonicalize structured `is_changed` values with a deliberately small budget."""
+    value_type = type(value)
+    if value_type in _PRIMITIVE_SIGNATURE_TYPES:
+        return _primitive_signature_value(value)
+    if value_type not in _CONTAINER_SIGNATURE_TYPES:
+        return Unhashable()
+
+    canonical = to_hashable(value, max_nodes=64, max_depth=8)
+    if type(canonical) is Unhashable:
+        return canonical
+
+    if value_type is list or value_type is tuple:
+        container_tag = "is_changed_list" if value_type is list else "is_changed_tuple"
+        return (container_tag, canonical[1])
+
+    return canonical
 
 class CacheKeySetID(CacheKeySet):
     def __init__(self, dynprompt, node_ids, is_changed_cache):
@@ -100,31 +272,93 @@ class CacheKeySetInputSignature(CacheKeySet):
 
     async def get_node_signature(self, dynprompt, node_id):
         signature = []
-        ancestors, order_mapping = self.get_ordered_ancestry(dynprompt, node_id)
-        signature.append(await self.get_immediate_node_signature(dynprompt, node_id, order_mapping))
+        ordered_ancestry = self._get_ordered_ancestry_snapshot(dynprompt, node_id)
+        if ordered_ancestry is None:
+            return Unhashable()
+        ancestors, order_mapping, input_snapshots = ordered_ancestry
+
+        immediate = await self._get_immediate_node_signature(
+            dynprompt,
+            node_id,
+            order_mapping,
+            input_snapshots.get(node_id),
+        )
+        if type(immediate) is Unhashable:
+            return immediate
+        signature.append(immediate)
+
         for ancestor_id in ancestors:
-            signature.append(await self.get_immediate_node_signature(dynprompt, ancestor_id, order_mapping))
-        return to_hashable(signature)
+            immediate = await self._get_immediate_node_signature(
+                dynprompt,
+                ancestor_id,
+                order_mapping,
+                input_snapshots.get(ancestor_id),
+            )
+            if type(immediate) is Unhashable:
+                return immediate
+            signature.append(immediate)
+
+        return tuple(signature)
 
     async def get_immediate_node_signature(self, dynprompt, node_id, ancestor_order_mapping):
+        return await self._get_immediate_node_signature(
+            dynprompt,
+            node_id,
+            ancestor_order_mapping,
+            None,
+        )
+
+    async def _get_immediate_node_signature(self, dynprompt, node_id, ancestor_order_mapping, input_items):
         if not dynprompt.has_node(node_id):
-            # This node doesn't exist -- we can't cache it.
-            return [float("NaN")]
+            return Unhashable()
+
         node = dynprompt.get_node(node_id)
         class_type = node["class_type"]
         class_def = nodes.NODE_CLASS_MAPPINGS[class_type]
-        signature = [class_type, await self.is_changed_cache.get(node_id)]
+
+        is_changed_signature = _shallow_is_changed_signature(await self.is_changed_cache.get(node_id))
+        if type(is_changed_signature) is Unhashable:
+            return is_changed_signature
+
+        signature = [class_type, is_changed_signature]
         if self.include_node_id_in_input() or (hasattr(class_def, "NOT_IDEMPOTENT") and class_def.NOT_IDEMPOTENT) or include_unique_id_in_input(class_type):
             signature.append(node_id)
+
         inputs = node["inputs"]
-        for key in sorted(inputs.keys()):
-            if is_link(inputs[key]):
-                (ancestor_id, ancestor_socket) = inputs[key]
-                ancestor_index = ancestor_order_mapping[ancestor_id]
-                signature.append((key,("ANCESTOR", ancestor_index, ancestor_socket)))
+        if input_items is None:
+            try:
+                input_items = list(inputs.items())
+            except RuntimeError:
+                return Unhashable()
+
+            if any(type(key) is not str for key, _ in input_items):
+                return Unhashable()
+            input_items.sort(key=lambda item: item[0])
+        else:
+            for key, snapshot_value in input_items:
+                if not is_link(snapshot_value):
+                    continue
+                try:
+                    live_value = inputs[key]
+                except (KeyError, TypeError):
+                    return Unhashable()
+                if not is_link(live_value) or live_value != snapshot_value:
+                    return Unhashable()
+
+        for key, input_value in input_items:
+            if is_link(input_value):
+                ancestor_id, ancestor_socket = input_value
+                ancestor_index = ancestor_order_mapping.get(ancestor_id)
+                if ancestor_index is None:
+                    return Unhashable()
+                signature.append((key, ("ANCESTOR", ancestor_index, ancestor_socket)))
             else:
-                signature.append((key, inputs[key]))
-        return signature
+                value_signature = to_hashable(input_value)
+                if type(value_signature) is Unhashable:
+                    return value_signature
+                signature.append((key, value_signature))
+
+        return tuple(signature)
 
     # This function returns a list of all ancestors of the given node. The order of the list is
     # deterministic based on which specific inputs the ancestor is connected by.
@@ -146,6 +380,66 @@ class CacheKeySetInputSignature(CacheKeySet):
                     ancestors.append(ancestor_id)
                     order_mapping[ancestor_id] = len(ancestors) - 1
                     self.get_ordered_ancestry_internal(dynprompt, ancestor_id, ancestors, order_mapping)
+
+    def _get_ordered_ancestry_snapshot(self, dynprompt, node_id):
+        """Return ancestry plus stable top-level input snapshots for signature building."""
+        ancestors = []
+        order_mapping = {}
+        input_snapshots = {}
+        if not self._get_ordered_ancestry_snapshot_internal(
+            dynprompt,
+            node_id,
+            ancestors,
+            order_mapping,
+            input_snapshots,
+        ):
+            return None
+        return ancestors, order_mapping, input_snapshots
+
+    def _get_ordered_ancestry_snapshot_internal(
+        self,
+        dynprompt,
+        node_id,
+        ancestors,
+        order_mapping,
+        input_snapshots,
+    ):
+        """Collect ancestry while freezing top-level list values used for link recognition."""
+        if not dynprompt.has_node(node_id):
+            return True
+
+        inputs = dynprompt.get_node(node_id)["inputs"]
+        try:
+            input_items = list(inputs.items())
+        except RuntimeError:
+            return False
+
+        if any(type(key) is not str for key, _ in input_items):
+            return False
+        input_items.sort(key=lambda item: item[0])
+        input_snapshots[node_id] = tuple(
+            (
+                key,
+                input_value.copy() if is_link(input_value) else input_value,
+            )
+            for key, input_value in input_items
+        )
+
+        for _, input_value in input_snapshots[node_id]:
+            if is_link(input_value):
+                ancestor_id = input_value[0]
+                if ancestor_id not in order_mapping:
+                    ancestors.append(ancestor_id)
+                    order_mapping[ancestor_id] = len(ancestors) - 1
+                    if not self._get_ordered_ancestry_snapshot_internal(
+                        dynprompt,
+                        ancestor_id,
+                        ancestors,
+                        order_mapping,
+                        input_snapshots,
+                    ):
+                        return False
+        return True
 
 class BasicCache:
     def __init__(self, key_class, enable_providers=False):
