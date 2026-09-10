@@ -5,6 +5,7 @@ import pytest
 import torch
 
 from comfy import attention_measure as m
+from comfy_extras import sparse_attention_measure as sparse_measure
 
 
 def request(*, equal=False):
@@ -147,6 +148,69 @@ def test_bind_and_capability_validate_concrete_owner_identity():
     assert plan.provider_identity == "test.provider"
     with pytest.raises(RuntimeError):
         m.prepare_capability(options, r, replace(ctx, provider_identity="other"))
+
+
+def test_bsa_pool_key_preserves_existing_unweighted_history_domain():
+    assert sparse_measure.pool_key(7, 56029, ("cond", 2), None) == (
+        7,
+        56029,
+        ("cond", 2),
+    )
+
+    plan = m.BoundMeasurePlan(
+        semantic_digest="measure-a",
+        implementation_profile="weighted_exact_blocks_v1",
+        provider_identity="comfy.core.block_sparse_attention",
+        owner_generation="owner-a",
+        numerical_route="core_bsa_h3_chunked",
+        preprocess_digest="pre-a",
+        q_rows=56029,
+        kv_rows=56029,
+        exact_k_block_range=(0, 387),
+        exact_range_digest="range-a",
+        key_log_measure=torch.empty(0),
+    )
+    weighted = sparse_measure.pool_key(7, 56029, ("cond", 2), plan)
+    assert weighted[:3] == (7, 56029, ("cond", 2))
+    assert weighted[3] == (
+        "attention_measure_v1",
+        "measure-a",
+        "comfy.core.block_sparse_attention",
+        "owner-a",
+        "core_bsa_h3_chunked",
+        "pre-a",
+        "weighted_exact_blocks_v1",
+    )
+    assert weighted != sparse_measure.pool_key(7, 56029, ("cond", 2), None)
+
+
+def test_sparse_measure_rejects_provider_without_key_bias_before_binding():
+    class Patch:
+        vsa = False
+        measure_owner_generation = "owner"
+        measure_plans = {}
+
+    def provider_without_bias(q, k, v):
+        raise AssertionError("provider must not execute during capability check")
+
+    assert not sparse_measure.supports_key_bias(provider_without_bias)
+    with pytest.raises(RuntimeError, match="without key_bias support"):
+        sparse_measure.prepare(
+            Patch(),
+            {m.ATTENTION_MEASURE_KEY: request()},
+            block_index=0,
+            q_rows=24,
+            kv_rows=24,
+            device="cpu",
+            dtype=torch.bfloat16,
+            head_dim=128,
+            mask_class="none",
+            existing_sink=(0, 1),
+            provider=provider_without_bias,
+            profile="weighted_exact_blocks_v1",
+            numerical_route="core_bsa_h3_chunked",
+            preprocess_digest="pre",
+        )
 
 
 def test_weighted_dense_sdpa_and_streaming_match_and_preserve_masks():
