@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from collections.abc import Mapping
 
 import torch
 
@@ -17,6 +18,7 @@ from comfy.attention_measure import (
 
 PROVIDER_IDENTITY = "comfy.core.block_sparse_attention"
 VDN_EPILOGUE_KEY = "vdn_h3_external_softmax_epilogue_v1"
+VDN_EXTERNAL_SEQUENCE_KEY = "vdn_h3_external_sequence_v1"
 
 
 def supports_key_bias(provider) -> bool:
@@ -59,6 +61,33 @@ def pool_key(block_index, rows, uuids, plan: BoundMeasurePlan | None):
             plan.implementation_profile,
         ),
     )
+
+
+def prepare_vdn_epilogue(attn, x, rope_freqs, transformer_options, block_index):
+    """Resolve the VDN-owned external Mixed-Grid gate/projection epilogue.
+
+    The contract is deliberately discovered from the concrete attention forward
+    that ModelPatcher installed on this block. An API-2 VDN Mixed-Grid route is
+    invalid if that callable does not expose the owner-bound capability; falling
+    back to ``attn.out_proj`` would silently drop VDN's learned gate.
+    """
+
+    external = transformer_options.get(VDN_EXTERNAL_SEQUENCE_KEY)
+    if not isinstance(external, Mapping) or external.get("api") != 2:
+        return None
+    if external.get("mode") != "dense_gate_no_linear" or external.get("topology") != "mixed_grid_low_suffix":
+        raise RuntimeError("Mixed-Grid attention measure received an unsupported VDN external-sequence contract")
+    forward = getattr(attn, "forward", None)
+    capability = getattr(forward, VDN_EPILOGUE_KEY, None)
+    prepare_epilogue = getattr(capability, "prepare", None)
+    if not callable(prepare_epilogue):
+        raise RuntimeError(
+            "VDN API-2 Mixed-Grid attention requires the owner-bound external softmax epilogue capability"
+        )
+    bound = prepare_epilogue(x, rope_freqs, transformer_options, block_index)
+    if not callable(getattr(bound, "apply", None)) or not callable(getattr(bound, "receipt_fields", None)):
+        raise RuntimeError("VDN external softmax epilogue capability returned an invalid bound owner")
+    return bound
 
 
 def _cache(patch):
@@ -112,7 +141,7 @@ def prepare(
         preprocess_digest=str(preprocess_digest),
         numerical_route=str(numerical_route),
         existing_sink=tuple(existing_sink),
-        external_sequence=transformer_options.get("vdn_h3_external_sequence_v1"),
+        external_sequence=transformer_options.get(VDN_EXTERNAL_SEQUENCE_KEY),
     )
     key = (
         digest,
