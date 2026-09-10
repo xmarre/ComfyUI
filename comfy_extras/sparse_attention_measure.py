@@ -6,6 +6,8 @@ import torch
 
 from comfy.attention_measure import (
     ATTENTION_MEASURE_KEY,
+    BoundMeasurePlan,
+    MeasureExecutionContext,
     bind,
     register_capability,
     semantic_digest,
@@ -21,7 +23,9 @@ def _supports_key_bias(provider) -> bool:
         parameters = inspect.signature(provider).parameters
     except (TypeError, ValueError):
         return False
-    return "key_bias" in parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values())
+    return "key_bias" in parameters or any(
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()
+    )
 
 
 def _cache(patch):
@@ -36,14 +40,19 @@ def prepare(
     patch,
     transformer_options,
     *,
+    block_index,
     q_rows,
     kv_rows,
     device,
+    dtype,
+    head_dim,
+    mask_class,
     existing_sink,
     provider,
     profile,
     numerical_route,
-):
+    preprocess_digest,
+) -> BoundMeasurePlan | None:
     request = transformer_options.get(ATTENTION_MEASURE_KEY)
     if request is None:
         return None
@@ -55,47 +64,92 @@ def prepare(
             "install a comfy-kitchen build with weighted sparse attention support"
         )
     digest = semantic_digest(request)
-    key = (digest, int(q_rows), int(kv_rows), str(torch.device(device)), tuple(existing_sink), profile, numerical_route)
+    context = MeasureExecutionContext(
+        provider_identity=PROVIDER_IDENTITY,
+        block_index=int(block_index),
+        owner=patch,
+        owner_generation=patch.measure_owner_generation,
+        layout=transformer_options.get("minimax_h3_layout"),
+        q_rows=int(q_rows),
+        kv_rows=int(kv_rows),
+        dtype=dtype,
+        device=torch.device(device),
+        head_dim=int(head_dim),
+        mask_class=str(mask_class),
+        preprocess_digest=str(preprocess_digest),
+        numerical_route=str(numerical_route),
+        existing_sink=tuple(existing_sink),
+        external_sequence=transformer_options.get("vdn_h3_external_sequence_v1"),
+    )
+    key = (
+        digest,
+        context.block_index,
+        context.q_rows,
+        context.kv_rows,
+        str(context.device),
+        str(context.dtype),
+        context.head_dim,
+        context.mask_class,
+        context.existing_sink,
+        profile,
+        context.numerical_route,
+        context.preprocess_digest,
+        context.owner_generation,
+    )
     cache = _cache(patch)
     result = cache.get(key)
     if result is None:
         result = bind(
             request,
-            layout=transformer_options.get("minimax_h3_layout"),
-            q_rows=int(q_rows),
-            kv_rows=int(kv_rows),
+            context=context,
             block_size=64,
-            existing_sink=existing_sink,
-            device=device,
             implementation_profile=profile,
-            owner_generation=patch.measure_owner_generation,
-            numerical_route=numerical_route,
-            external_sequence=transformer_options.get("vdn_h3_external_sequence_v1"),
         )
         cache[key] = result
     return result
 
 
-def dense_call(patch, transformer_options, q, k, v, heads, *, mask, attn_precision,
-               skip_reshape, skip_output_reshape, scale):
+def dense_call(
+    patch,
+    transformer_options,
+    q,
+    k,
+    v,
+    heads,
+    *,
+    mask,
+    attn_precision,
+    skip_reshape,
+    skip_output_reshape,
+    scale,
+    block_index,
+):
     q_rows = q.shape[2] if skip_reshape else q.shape[1]
     kv_rows = k.shape[2] if skip_reshape else k.shape[1]
     sink, _ = patch.sinks(transformer_options, q_rows)
     plan = prepare(
         patch,
         transformer_options,
+        block_index=block_index,
         q_rows=q_rows,
         kv_rows=kv_rows,
         device=q.device,
+        dtype=q.dtype,
+        head_dim=q.shape[-1] if skip_reshape else q.shape[-1] // heads,
+        mask_class="none" if mask is None else ("boolean" if mask.dtype == torch.bool else "additive"),
         existing_sink=sink,
         provider=weighted_dense,
         profile="dense_exact_v1",
         numerical_route="core_dense_sdpa",
+        preprocess_digest="caller_attention_domain_v1",
     )
     if plan is None:
         return None
     return weighted_dense(
-        q, k, v, heads,
+        q,
+        k,
+        v,
+        heads,
         key_bias=plan.key_log_measure,
         mask=mask,
         attn_precision=attn_precision,
@@ -114,18 +168,19 @@ class Capability:
         self.patch = patch
 
     def prepare(self, request, execution_context):
-        if request is not execution_context.get("transformer_options", {}).get(ATTENTION_MEASURE_KEY):
-            raise RuntimeError("attention-measure request is not owned by the current transformer options")
-        return prepare(
-            self.patch,
-            execution_context["transformer_options"],
-            q_rows=execution_context["q_rows"],
-            kv_rows=execution_context["kv_rows"],
-            device=execution_context["device"],
-            existing_sink=execution_context.get("existing_sink", (0, 0)),
-            provider=execution_context["provider"],
-            profile=execution_context["implementation_profile"],
-            numerical_route=execution_context["numerical_route"],
+        if not isinstance(execution_context, MeasureExecutionContext):
+            raise TypeError("core sparse attention requires MeasureExecutionContext")
+        if execution_context.owner is not self.patch:
+            raise RuntimeError("core sparse attention measure capability is bound to another patch owner")
+        return bind(
+            request,
+            context=execution_context,
+            block_size=64,
+            implementation_profile=(
+                "weighted_exact_blocks_v1"
+                if execution_context.numerical_route.startswith("core_bsa")
+                else "dense_exact_v1"
+            ),
         )
 
 
