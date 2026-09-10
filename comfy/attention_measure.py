@@ -187,18 +187,36 @@ def validate_h3(request, *, layout, q_rows, kv_rows, external_sequence=None):
     if video != (normalized["video_start"], q_rows):
         raise ValueError("attention measure video interval disagrees with the H3 layout")
     if external_sequence is not None:
+        if not isinstance(external_sequence, Mapping):
+            raise TypeError("attention measure VDN external-sequence contract must be a mapping")
+        integer_fields = (
+            "api",
+            "native_sequence_rows",
+            "sequence_rows",
+            "video_start",
+            "temporal",
+            "prefix_t",
+            "source_rows_per_frame",
+            "prefix_rows_per_frame",
+        )
+        if any(type(external_sequence.get(key)) is not int for key in integer_fields):
+            raise TypeError("attention measure VDN external-sequence row counts must be integers")
+        source_rows = math.prod(normalized["source_grid"])
+        prefix_rows = math.prod(normalized["prefix_grid"])
+        native_rows = normalized["video_start"] + normalized["temporal"] * source_rows
         checks = {
             "api": 2,
             "mode": "dense_gate_no_linear",
             "topology": MIXED_GRID_TOPOLOGY,
+            "native_sequence_rows": native_rows,
             "sequence_rows": q_rows,
             "video_start": normalized["video_start"],
             "temporal": normalized["temporal"],
             "prefix_t": normalized["prefix_t"],
-            "source_rows_per_frame": math.prod(normalized["source_grid"]),
-            "prefix_rows_per_frame": math.prod(normalized["prefix_grid"]),
+            "source_rows_per_frame": source_rows,
+            "prefix_rows_per_frame": prefix_rows,
         }
-        if not isinstance(external_sequence, Mapping) or any(external_sequence.get(k) != v for k, v in checks.items()):
+        if any(external_sequence.get(k) != v for k, v in checks.items()):
             raise ValueError("attention measure disagrees with the VDN external-sequence contract")
     return normalized
 
@@ -424,6 +442,14 @@ def weighted_dense_streaming(
     work = torch.float32
     qf, kf, vf = qh.to(work), kh.to(work), vh.to(work)
     bias = key_bias.to(work)
+    composed_mask = None if mask is None else _mask(
+        mask,
+        batch=batch,
+        q_rows=q_rows,
+        kv_rows=kv_rows,
+        dtype=work,
+        device=q.device,
+    )
     row_max = torch.full((batch, heads, q_rows, 1), float("-inf"), device=q.device, dtype=work)
     row_sum = torch.zeros_like(row_max)
     numerator = torch.zeros((batch, heads, q_rows, dim_head), device=q.device, dtype=work)
@@ -431,9 +457,8 @@ def weighted_dense_streaming(
         stop = min(start + key_chunk_size, kv_rows)
         scores = torch.matmul(qf, kf[:, :, start:stop].transpose(-1, -2)) * scale
         scores.add_(bias[start:stop])
-        if mask is not None:
-            composed = _mask(mask, batch=batch, q_rows=q_rows, kv_rows=kv_rows, dtype=work, device=q.device)
-            scores.add_(composed[..., start:stop])
+        if composed_mask is not None:
+            scores.add_(composed_mask[..., start:stop])
         chunk_max = scores.amax(dim=-1, keepdim=True)
         new_max = torch.maximum(row_max, chunk_max)
         safe_old = torch.where(torch.isfinite(row_max), row_max, torch.zeros_like(row_max))
