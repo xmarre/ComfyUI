@@ -9,6 +9,7 @@ from comfy.attention_measure import (
     BoundMeasurePlan,
     MeasureExecutionContext,
     bind,
+    prepare_capability,
     register_capability,
     semantic_digest,
     weighted_dense,
@@ -18,7 +19,7 @@ PROVIDER_IDENTITY = "comfy.core.block_sparse_attention"
 VDN_EPILOGUE_KEY = "vdn_h3_external_softmax_epilogue_v1"
 
 
-def _supports_key_bias(provider) -> bool:
+def supports_key_bias(provider) -> bool:
     try:
         parameters = inspect.signature(provider).parameters
     except (TypeError, ValueError):
@@ -58,7 +59,7 @@ def prepare(
         return None
     if patch.vsa:
         raise RuntimeError("Mixed-Grid attention measure is incompatible with VSA tile planning")
-    if profile == "weighted_exact_blocks_v1" and not _supports_key_bias(provider):
+    if profile == "weighted_exact_blocks_v1" and not supports_key_bias(provider):
         raise RuntimeError(
             "Mixed-Grid attention measure selected a sparse provider without key_bias support; "
             "install a comfy-kitchen build with weighted sparse attention support"
@@ -99,12 +100,11 @@ def prepare(
     cache = _cache(patch)
     result = cache.get(key)
     if result is None:
-        result = bind(
-            request,
-            context=context,
-            block_size=64,
-            implementation_profile=profile,
-        )
+        result = prepare_capability(transformer_options, request, context)
+        if result.implementation_profile != profile:
+            raise RuntimeError(
+                "core sparse attention measure capability selected an unexpected implementation profile"
+            )
         cache[key] = result
     return result
 
@@ -172,19 +172,20 @@ class Capability:
             raise TypeError("core sparse attention requires MeasureExecutionContext")
         if execution_context.owner is not self.patch:
             raise RuntimeError("core sparse attention measure capability is bound to another patch owner")
+        profile = (
+            "weighted_exact_blocks_v1"
+            if execution_context.numerical_route.startswith("core_bsa")
+            else "dense_exact_v1"
+        )
         return bind(
             request,
             context=execution_context,
             block_size=64,
-            implementation_profile=(
-                "weighted_exact_blocks_v1"
-                if execution_context.numerical_route.startswith("core_bsa")
-                else "dense_exact_v1"
-            ),
+            implementation_profile=profile,
         )
 
 
 def register(patch, transformer_options):
-    if not hasattr(patch, "measure_capability"):
+    if getattr(patch, "measure_capability", None) is None:
         patch.measure_capability = Capability(patch)
     register_capability(transformer_options, PROVIDER_IDENTITY, patch.measure_capability)
