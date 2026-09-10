@@ -342,6 +342,7 @@ def h3_sparse_attention(attn, x, rope_freqs, transformer_options, patch: SparseA
 
         sink, sink_q = ((0, 0), (0, 0)) if patch.vsa else patch.sinks(transformer_options, n_tokens)
         measure_plan = None
+        vdn_epilogue = None
         if request is not None:
             measure_plan = measure.prepare(
                 patch,
@@ -362,6 +363,9 @@ def h3_sparse_attention(attn, x, rope_freqs, transformer_options, patch: SparseA
             if measure_plan is None:
                 raise RuntimeError("attention measure disappeared during H3 chunked binding")
             sink = measure_plan.exact_k_block_range
+            vdn_epilogue = measure.prepare_vdn_epilogue(
+                attn, x, rope_freqs, transformer_options, block_index
+            )
 
         measure_identity = None if measure_plan is None else (
             measure_plan.semantic_digest,
@@ -415,7 +419,12 @@ def h3_sparse_attention(attn, x, rope_freqs, transformer_options, patch: SparseA
     patch.pooled[key] = pooled
     mode = f"VSA tiles ({n} padded rows, {sink[1]} prefix tiles)" if plan is not None else f"sinks {sink}/{sink_q}"
     patch.log_once(("producer", n, measure_identity), f"sparse producer path: {n_tokens} tokens, {mode}")
-    out = out.view(n, heads * head_dim)
+    out = out.view(n, heads, head_dim)
+    if vdn_epilogue is not None:
+        if plan is not None:
+            raise RuntimeError("VDN Mixed-Grid epilogue cannot consume VSA-reordered rows")
+        return vdn_epilogue.apply(out, x)
+    out = out.reshape(n, heads * head_dim)
     if plan is not None:
         out = out[plan["inv"]]
     return attn.out_proj(out)
