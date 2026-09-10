@@ -112,6 +112,7 @@ def test_h3_validation_cross_checks_actual_layout_and_vdn_when_present():
         "api": 2,
         "mode": "dense_gate_no_linear",
         "topology": "mixed_grid_low_suffix",
+        "native_sequence_rows": 18,
         "sequence_rows": rows,
         "video_start": 6,
         "temporal": 2,
@@ -211,6 +212,52 @@ def test_sparse_measure_rejects_provider_without_key_bias_before_binding():
             numerical_route="core_bsa_h3_chunked",
             preprocess_digest="pre",
         )
+
+
+def test_vdn_epilogue_resolution_is_owner_bound_and_fail_closed():
+    class Bound:
+        def apply(self, softmax_out, x):
+            return softmax_out
+
+        def receipt_fields(self):
+            return (("completed", True),)
+
+    class Capability:
+        def __init__(self):
+            self.calls = []
+
+        def prepare(self, x, rope, options, block_index):
+            self.calls.append((x, rope, options, block_index))
+            return Bound()
+
+    x = torch.zeros(24, 8)
+    rope = torch.zeros(1, 24, 1, 1)
+    options = {
+        "vdn_h3_external_sequence_v1": {
+            "api": 2,
+            "mode": "dense_gate_no_linear",
+            "topology": "mixed_grid_low_suffix",
+        }
+    }
+    forward = lambda *args, **kwargs: None
+    capability = Capability()
+    setattr(forward, sparse_measure.VDN_EPILOGUE_KEY, capability)
+    attn = SimpleNamespace(forward=forward)
+    bound = sparse_measure.prepare_vdn_epilogue(attn, x, rope, options, 5)
+    assert isinstance(bound, Bound)
+    assert capability.calls == [(x, rope, options, 5)]
+
+    with pytest.raises(RuntimeError, match="owner-bound"):
+        sparse_measure.prepare_vdn_epilogue(
+            SimpleNamespace(forward=lambda *args, **kwargs: None), x, rope, options, 5
+        )
+    assert sparse_measure.prepare_vdn_epilogue(
+        SimpleNamespace(forward=lambda *args, **kwargs: None),
+        x,
+        rope,
+        {"vdn_h3_external_sequence_v1": {"api": 1}},
+        5,
+    ) is None
 
 
 def test_weighted_dense_sdpa_and_streaming_match_and_preserve_masks():
