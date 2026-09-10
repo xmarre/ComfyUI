@@ -309,7 +309,7 @@ def h3_eligible(attn, x, rope_freqs, transformer_options, patch: SparseAttnPatch
     if reason is not None:
         patch.log_once(("dense", n_tokens, reason), f"dense ({n_tokens} tokens): {reason}")
         return False
-    if request is not None and not measure._supports_key_bias(ck.sol_attn_chunked):
+    if request is not None and not measure.supports_key_bias(ck.sol_attn_chunked):
         # Do not silently fall through to native full-QKV H3 attention: this path
         # was selected specifically for the chunked producer's memory contract.
         raise RuntimeError(
@@ -369,7 +369,12 @@ def h3_sparse_attention(attn, x, rope_freqs, transformer_options, patch: SparseA
             measure_plan.owner_generation,
             measure_plan.numerical_route,
         )
-        key = (block_index, n, tuple(transformer_options.get("uuids", ())), measure_identity)
+        key = measure.pool_key(
+            block_index,
+            n,
+            transformer_options.get("uuids", ()),
+            measure_plan,
+        )
         pooled = patch.pooled.get(key)
         first = pooled is None
         if first:
