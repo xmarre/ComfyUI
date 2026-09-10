@@ -29,6 +29,12 @@ def supports_key_bias(provider) -> bool:
     )
 
 
+# Keep the currently staged BlockSparseAttention call site valid while this
+# companion remains split across files. This alias is temporary compatibility,
+# not a second capability surface.
+_supports_key_bias = supports_key_bias
+
+
 def _cache(patch):
     cache = getattr(patch, "measure_plans", None)
     if cache is None:
