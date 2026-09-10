@@ -35,6 +35,32 @@ def supports_key_bias(provider) -> bool:
 _supports_key_bias = supports_key_bias
 
 
+def pool_key(block_index, rows, uuids, plan: BoundMeasurePlan | None):
+    """Return the BSA calibration key without perturbing the established path.
+
+    Unweighted H3 calls intentionally retain the historical three-tuple used by
+    Spectrum's reviewed cold/primed ownership proof. Weighted calls add the
+    numerical measure identity so their kmean/vscale calibration cannot be
+    mistaken for an unweighted or differently weighted attention domain.
+    """
+
+    base = (int(block_index), int(rows), tuple(uuids))
+    if plan is None:
+        return base
+    return (
+        *base,
+        (
+            ATTENTION_MEASURE_KEY,
+            plan.semantic_digest,
+            plan.provider_identity,
+            plan.owner_generation,
+            plan.numerical_route,
+            plan.preprocess_digest,
+            plan.implementation_profile,
+        ),
+    )
+
+
 def _cache(patch):
     cache = getattr(patch, "measure_plans", None)
     if cache is None:
