@@ -214,7 +214,7 @@ def test_sparse_measure_rejects_provider_without_key_bias_before_binding():
         )
 
 
-def test_vdn_epilogue_resolution_is_owner_bound_and_fail_closed():
+def test_vdn_epilogue_resolution_is_optional_but_owner_bound_when_installed():
     class Bound:
         def apply(self, softmax_out, x):
             return softmax_out
@@ -239,7 +239,15 @@ def test_vdn_epilogue_resolution_is_owner_bound_and_fail_closed():
             "topology": "mixed_grid_low_suffix",
         }
     }
+
+    # Flow publishes API-2 mixed geometry independently of whether VDN is
+    # installed. A native H3 owner therefore keeps its native projection.
+    native = SimpleNamespace(forward=lambda *args, **kwargs: None)
+    assert sparse_measure.prepare_vdn_epilogue(native, x, rope, options, 5) is None
+
     forward = lambda *args, **kwargs: None
+    setattr(forward, sparse_measure.VDN_FORWARD_MARKER, True)
+    setattr(forward, sparse_measure.VDN_EXTERNAL_SEQUENCE_API_ATTR, 2)
     capability = Capability()
     setattr(forward, sparse_measure.VDN_EPILOGUE_KEY, capability)
     attn = SimpleNamespace(forward=forward)
@@ -247,12 +255,24 @@ def test_vdn_epilogue_resolution_is_owner_bound_and_fail_closed():
     assert isinstance(bound, Bound)
     assert capability.calls == [(x, rope, options, 5)]
 
+    missing = lambda *args, **kwargs: None
+    setattr(missing, sparse_measure.VDN_FORWARD_MARKER, True)
+    setattr(missing, sparse_measure.VDN_EXTERNAL_SEQUENCE_API_ATTR, 2)
     with pytest.raises(RuntimeError, match="owner-bound"):
         sparse_measure.prepare_vdn_epilogue(
-            SimpleNamespace(forward=lambda *args, **kwargs: None), x, rope, options, 5
+            SimpleNamespace(forward=missing), x, rope, options, 5
         )
+
+    incompatible = lambda *args, **kwargs: None
+    setattr(incompatible, sparse_measure.VDN_FORWARD_MARKER, True)
+    setattr(incompatible, sparse_measure.VDN_EXTERNAL_SEQUENCE_API_ATTR, 1)
+    with pytest.raises(RuntimeError, match="API 2"):
+        sparse_measure.prepare_vdn_epilogue(
+            SimpleNamespace(forward=incompatible), x, rope, options, 5
+        )
+
     assert sparse_measure.prepare_vdn_epilogue(
-        SimpleNamespace(forward=lambda *args, **kwargs: None),
+        native,
         x,
         rope,
         {"vdn_h3_external_sequence_v1": {"api": 1}},
