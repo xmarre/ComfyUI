@@ -19,6 +19,8 @@ from comfy.attention_measure import (
 PROVIDER_IDENTITY = "comfy.core.block_sparse_attention"
 VDN_EPILOGUE_KEY = "vdn_h3_external_softmax_epilogue_v1"
 VDN_EXTERNAL_SEQUENCE_KEY = "vdn_h3_external_sequence_v1"
+VDN_FORWARD_MARKER = "_vdn_forward"
+VDN_EXTERNAL_SEQUENCE_API_ATTR = "_vdn_external_sequence_api"
 
 
 def supports_key_bias(provider) -> bool:
@@ -64,12 +66,13 @@ def pool_key(block_index, rows, uuids, plan: BoundMeasurePlan | None):
 
 
 def prepare_vdn_epilogue(attn, x, rope_freqs, transformer_options, block_index):
-    """Resolve the VDN-owned external Mixed-Grid gate/projection epilogue.
+    """Resolve the optional VDN-owned external Mixed-Grid gate/projection epilogue.
 
-    The contract is deliberately discovered from the concrete attention forward
-    that ModelPatcher installed on this block. An API-2 VDN Mixed-Grid route is
-    invalid if that callable does not expose the owner-bound capability; falling
-    back to ``attn.out_proj`` would silently drop VDN's learned gate.
+    Flow's API-2 external-sequence contract describes mixed geometry and can be
+    present without VDN. Only a concrete VDN attention owner must provide the
+    owner-bound epilogue; an installed VDN owner without that capability remains
+    fail-closed because falling back to ``attn.out_proj`` would drop its learned
+    gate.
     """
 
     external = transformer_options.get(VDN_EXTERNAL_SEQUENCE_KEY)
@@ -78,6 +81,10 @@ def prepare_vdn_epilogue(attn, x, rope_freqs, transformer_options, block_index):
     if external.get("mode") != "dense_gate_no_linear" or external.get("topology") != "mixed_grid_low_suffix":
         raise RuntimeError("Mixed-Grid attention measure received an unsupported VDN external-sequence contract")
     forward = getattr(attn, "forward", None)
+    if getattr(forward, VDN_FORWARD_MARKER, False) is not True:
+        return None
+    if getattr(forward, VDN_EXTERNAL_SEQUENCE_API_ATTR, None) != 2:
+        raise RuntimeError("VDN Mixed-Grid attention owner does not advertise external-sequence API 2")
     capability = getattr(forward, VDN_EPILOGUE_KEY, None)
     prepare_epilogue = getattr(capability, "prepare", None)
     if not callable(prepare_epilogue):
