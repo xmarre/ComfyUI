@@ -6,6 +6,7 @@ from collections.abc import Mapping
 import torch
 
 from comfy.attention_measure import (
+    ATTENTION_MEASURE_CAPABILITIES_KEY,
     ATTENTION_MEASURE_KEY,
     BoundMeasurePlan,
     MeasureExecutionContext,
@@ -13,6 +14,7 @@ from comfy.attention_measure import (
     prepare_capability,
     register_capability,
     semantic_digest,
+    validate_h3,
     weighted_dense,
 )
 
@@ -132,7 +134,6 @@ def prepare(
             "Mixed-Grid attention measure selected a sparse provider without key_bias support; "
             "install a comfy-kitchen build with weighted sparse attention support"
         )
-    digest = semantic_digest(request)
     context = MeasureExecutionContext(
         provider_identity=PROVIDER_IDENTITY,
         block_index=int(block_index),
@@ -150,6 +151,27 @@ def prepare(
         existing_sink=tuple(existing_sink),
         external_sequence=transformer_options.get(VDN_EXTERNAL_SEQUENCE_KEY),
     )
+
+    # A cached plan owns only the immutable O(T) measure materialization. Runtime
+    # layout/external geometry and the concrete capability registry are live
+    # execution facts and must be re-proven on every use; otherwise a wrapper can
+    # replace them after the first bind while the cache still returns stale proof.
+    normalized = validate_h3(
+        request,
+        layout=context.layout,
+        q_rows=context.q_rows,
+        kv_rows=context.kv_rows,
+        external_sequence=context.external_sequence,
+    )
+    digest = semantic_digest(normalized)
+    registry = transformer_options.get(ATTENTION_MEASURE_CAPABILITIES_KEY)
+    capability = registry.get(PROVIDER_IDENTITY) if isinstance(registry, Mapping) else None
+    if (
+        capability is not getattr(patch, "measure_capability", None)
+        or getattr(capability, "patch", None) is not patch
+    ):
+        raise RuntimeError("core sparse attention measure capability owner changed after binding")
+
     key = (
         digest,
         context.block_index,
@@ -168,7 +190,7 @@ def prepare(
     cache = _cache(patch)
     result = cache.get(key)
     if result is None:
-        result = prepare_capability(transformer_options, request, context)
+        result = prepare_capability(transformer_options, normalized, context)
         if result.implementation_profile != profile:
             raise RuntimeError(
                 "core sparse attention measure capability selected an unexpected implementation profile"
