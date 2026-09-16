@@ -2,6 +2,13 @@ import asyncio
 
 import pytest
 
+from comfy.cli_args import args
+
+args.cpu = True
+
+import execution  # noqa: E402
+import nodes  # noqa: E402
+
 
 class _Producer:
     RETURN_TYPES = ("IMAGE",)
@@ -21,11 +28,6 @@ class _Consumer:
 
 @pytest.fixture
 def execution_module(monkeypatch):
-    from comfy.cli_args import args
-    monkeypatch.setattr(args, "cpu", True, raising=False)
-    import execution
-    import nodes
-
     monkeypatch.setitem(nodes.NODE_CLASS_MAPPINGS, "LinkValidationProducer", _Producer)
     monkeypatch.setitem(nodes.NODE_CLASS_MAPPINGS, "LinkValidationConsumer", _Consumer)
     return execution
