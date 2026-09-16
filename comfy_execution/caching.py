@@ -211,7 +211,7 @@ def to_hashable(
             max_depth=max_depth,
             budget={"remaining": max_nodes},
         )
-    except RuntimeError:
+    except (RuntimeError, ValueError):
         return Unhashable()
 
     if result is _FAILED_SIGNATURE:
@@ -744,7 +744,7 @@ class NullCache:
 
 class LRUCache(BasicCache):
     def __init__(self, key_class, max_size=100, enable_providers=False):
-        super().__init__(key_class, enable_providers=enable_providers)
+        super().__init__(key_class, 0, enable_providers=enable_providers)
         self.max_size = max_size
         self.min_generation = 0
         self.generation = 0
