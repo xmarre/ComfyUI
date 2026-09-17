@@ -72,6 +72,8 @@ def _primitive_signature_value(obj):
 def _primitive_signature_sort_key(obj):
     """Return a deterministic ordering key for a primitive signature value."""
     obj_type = type(obj)
+    if obj_type is str or obj_type is bytes or obj_type is int:
+        return ("primitive", obj_type.__module__, obj_type.__qualname__, obj)
     return ("primitive", obj_type.__module__, obj_type.__qualname__, repr(obj))
 
 
