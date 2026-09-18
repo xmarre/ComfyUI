@@ -3,8 +3,14 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+import torch
 
-import comfy_extras.nodes_sparse_attention as sparse
+from comfy.cli_args import args as cli_args
+
+if not torch.cuda.is_available():
+    cli_args.cpu = True
+
+import comfy_extras.nodes_sparse_attention as sparse  # noqa: E402
 
 
 class _Contract:
