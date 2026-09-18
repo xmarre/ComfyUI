@@ -382,6 +382,14 @@ def apply_block_sparse_attention(model, *, tau, topk_ratio, vsa, start_percent, 
         # VSA weights were trained against their sparse pattern, don't pull the attention toward dense
         logging.info("VSA: extra_tokens ignored (the trained sparse pattern is the target)")
         extra_tokens = 0
+    diffusion_model = model.get_model_object("diffusion_model")
+    keyless_contract = _keyless_h3_contract(diffusion_model)
+    if keyless_contract is not None and vsa:
+        raise ValueError(
+            "VSA selection is not compatible with h3_keyless_core50_v1: "
+            "the VSA MiniMax-H3 producer requires native qkv_proj/k_norm"
+        )
+
     patch = SparseAttnPatch(tau=tau, topk_ratio=topk_ratio, vsa=vsa,
                             sigma_start=float(model_sampling.percent_to_sigma(start_percent)),
                             sigma_end=float(model_sampling.percent_to_sigma(end_percent)),
@@ -394,14 +402,7 @@ def apply_block_sparse_attention(model, *, tau, topk_ratio, vsa, start_percent, 
     m.add_callback_with_key(comfy.patcher_extension.CallbacksMP.ON_CLEANUP,
                             "block_sparse_attention", lambda model_patcher: patch.reset())
 
-    diffusion_model = model.get_model_object("diffusion_model")
-    keyless_contract = _keyless_h3_contract(diffusion_model)
     if keyless_contract is not None:
-        if vsa:
-            raise ValueError(
-                "VSA selection is not compatible with h3_keyless_core50_v1: "
-                "the VSA MiniMax-H3 producer requires native qkv_proj/k_norm"
-            )
         logging.info(
             "BlockSparseAttention: Keyless H3 detected; using the generic materialized "
             "Q/route(V)/V attention override and leaving the QKV-only H3 chunked producer disabled"
