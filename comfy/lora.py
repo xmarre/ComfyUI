@@ -230,7 +230,6 @@ def _reject_unsupported_keyless_h3_adapter(model):
 
 
 def model_lora_keys_unet(model, key_map={}):
-    _reject_unsupported_keyless_h3_adapter(model)
     sd = model.state_dict()
     sdk = sd.keys()
 
