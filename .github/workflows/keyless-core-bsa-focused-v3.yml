@@ -1,0 +1,30 @@
+name: Keyless H3 sparse-attention focused test
+
+on:
+  push:
+    branches:
+      - ci/keyless-core-bsa-focused-v3-20260918
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install ComfyUI unit-test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r requirements.txt
+          python -m pip install -r tests-unit/requirements.txt
+      - name: Run focused Keyless H3 sparse-attention regression
+        run: |
+          python -m pytest -q tests-unit/comfy_test/test_minimax_h3_keyless_sparse_attention.py
