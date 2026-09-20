@@ -194,7 +194,7 @@ def test_float64_weight_oracle_partition_sweep():
     [
         ([0, 272], [256, 256], [-16], 528),
         ([0, 272], [256, 256], [0], 528),
-        ([0, 16], [256, 16], [240], 256),
+        ([0, 240], [256, 16], [240], 256),
     ],
 )
 def test_axis_weight_planner_rejects_invalid_overlap_geometry(starts, lengths, overlaps, axis_length):
