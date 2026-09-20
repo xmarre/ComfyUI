@@ -189,6 +189,21 @@ def test_float64_weight_oracle_partition_sweep():
     assert worst <= 1e-12
 
 
+@pytest.mark.parametrize(
+    ("starts", "lengths", "overlaps", "axis_length"),
+    [
+        ([0, 272], [256, 256], [-16], 528),
+        ([0, 272], [256, 256], [0], 528),
+        ([0, 16], [256, 16], [240], 256),
+    ],
+)
+def test_axis_weight_planner_rejects_invalid_overlap_geometry(starts, lengths, overlaps, axis_length):
+    model = _bare_model()
+
+    with pytest.raises(ValueError):
+        model._tile_axis_weights(starts, lengths, overlaps, axis_length, torch.device("cpu"))
+
+
 @pytest.mark.parametrize("overlap", [0, 64, 128, 240])
 @pytest.mark.parametrize("length", [16, 256, 272, 448, 464, 512, 1216, 2064])
 def test_axis_weights_are_nonnegative_partition_of_unity(length, overlap):
