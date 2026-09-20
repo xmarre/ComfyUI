@@ -558,13 +558,21 @@ class MiniMaxH3VideoVAE(nn.Module):
             raise ValueError("invalid MiniMax H3 VAE tile plan")
         if not starts or starts[0] != 0 or starts[-1] + lengths[-1] != axis_length:
             raise ValueError("MiniMax H3 VAE tile plan does not cover the full axis")
+        if any(overlap < 0 for overlap in overlaps):
+            raise ValueError("MiniMax H3 VAE tile plan has a negative overlap")
 
         for i, (start, length) in enumerate(zip(starts, lengths)):
             if length <= 0 or start < 0 or start + length > axis_length:
                 raise ValueError("MiniMax H3 VAE tile plan has an invalid tile extent")
             if i > 0:
+                overlap = overlaps[i - 1]
                 previous_end = starts[i - 1] + lengths[i - 1]
-                if start <= starts[i - 1] or previous_end - start != overlaps[i - 1]:
+                if (
+                    start <= starts[i - 1]
+                    or start > previous_end
+                    or overlap > min(lengths[i - 1], length)
+                    or previous_end - start != overlap
+                ):
                     raise ValueError("MiniMax H3 VAE tile plan has inconsistent overlap geometry")
 
         raw_weights = []
