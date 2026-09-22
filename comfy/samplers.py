@@ -1218,6 +1218,10 @@ class CFGGuider:
         return sampling_function(self.inner_model, x, timestep, self.conds.get("negative", None), self.conds.get("positive", None), self.cfg, model_options=model_options, seed=seed)
 
     def inner_sample(self, noise, latent_image, device, sampler, sigmas, denoise_mask, callback, disable_pbar, seed, latent_shapes=None):
+        # OUTER_SAMPLE wrappers may replace the packed latent geometry (for example,
+        # progressive low/high sampling). Keep the model's execution geometry aligned
+        # with the actual inner invocation, while sample() still publishes the outer
+        # geometry early enough for prepare_sampling() memory admission.
         self.inner_model.latent_shapes = latent_shapes
 
         if latent_image is not None and torch.count_nonzero(latent_image) > 0: #Don't shift the empty latent image.
@@ -1284,6 +1288,7 @@ class CFGGuider:
         else:
             latent_shapes = [latent_image.shape]
             sampler_shapes = [tuple(latent_image.shape)]
+        self.model_patcher.model.latent_shapes = latent_shapes
         detail("Sampler: model=%s latent_shapes=%s", self.model_patcher.model.__class__.__name__, sampler_shapes)
 
         if len(latent_shapes) > 1 and callback is not None:
