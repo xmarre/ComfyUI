@@ -994,6 +994,16 @@ def linear_input_act(linear, x, input_act, act_weight=None, act_eps=0.0,
             return out
         return torch.addcmul(residual, out, residual_scale)
 
+    # Fused weight-only calls cannot execute a patched forward or Module hooks.
+    module_hooks = torch.nn.modules.module
+    if (getattr(linear.forward, "__func__", None) is not type(linear).forward
+            or linear._forward_hooks or linear._forward_pre_hooks
+            or linear._backward_hooks or linear._backward_pre_hooks
+            or linear._compiled_call_impl is not None
+            or module_hooks._global_forward_hooks or module_hooks._global_forward_pre_hooks
+            or module_hooks._global_backward_hooks or module_hooks._global_backward_pre_hooks):
+        return _residual_out(linear(_eager_input_act(x, input_act, act_weight, act_eps)))
+
     weight = linear.weight
     full_precision_mm = getattr(linear, "_full_precision_mm", False)
     if (comfy.model_management.in_training
