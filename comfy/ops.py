@@ -487,6 +487,12 @@ class CastWeightBiasOp:
     weight_function = []
     bias_function = []
 
+def _linear_input_act_fusable(forward):
+    """Mark a Linear forward whose result linear_input_act's fused paths reproduce."""
+    # Self-reference: functools.wraps copies the attribute, but not its identity.
+    forward._linear_input_act_fusable = forward
+    return forward
+
 class disable_weight_init:
     @staticmethod
     def _zero_init_parameter(module, name):
@@ -570,6 +576,7 @@ class disable_weight_init:
             with CastBiasWeightContext(self, input, offloadable=True) as (weight, bias):
                 return torch.nn.functional.linear(input, weight, bias)
 
+        @_linear_input_act_fusable
         def forward(self, *args, **kwargs):
             run_every_op()
             if self.comfy_cast_weights or len(self.weight_function) > 0 or len(self.bias_function) > 0:
@@ -928,6 +935,7 @@ if CUBLAS_IS_AVAILABLE:
                 with CastBiasWeightContext(self, input, offloadable=True) as (weight, bias):
                     return cublas_half_matmul(input, weight, bias, self._epilogue_str, self.has_bias)
 
+            @_linear_input_act_fusable
             def forward(self, *args, **kwargs):
                 run_every_op()
                 if self.comfy_cast_weights or len(self.weight_function) > 0 or len(self.bias_function) > 0:
@@ -993,6 +1001,19 @@ def linear_input_act(linear, x, input_act, act_weight=None, act_eps=0.0,
         if residual is None:
             return out
         return torch.addcmul(residual, out, residual_scale)
+
+    # Fused weight-only calls cannot execute a patched forward or Module hooks.
+    module_hooks = torch.nn.modules.module
+    # Subclasses that override forward are not covered by the fused paths.
+    forward = getattr(linear.forward, "__func__", None)
+    if (forward is not type(linear).forward
+            or getattr(forward, "_linear_input_act_fusable", None) is not forward
+            or linear._forward_hooks or linear._forward_pre_hooks
+            or linear._backward_hooks or linear._backward_pre_hooks
+            or linear._compiled_call_impl is not None
+            or module_hooks._global_forward_hooks or module_hooks._global_forward_pre_hooks
+            or module_hooks._global_backward_hooks or module_hooks._global_backward_pre_hooks):
+        return _residual_out(linear(_eager_input_act(x, input_act, act_weight, act_eps)))
 
     weight = linear.weight
     full_precision_mm = getattr(linear, "_full_precision_mm", False)
@@ -1429,6 +1450,7 @@ def mixed_precision_ops(quant_config={}, compute_dtype=torch.bfloat16, full_prec
                     weight = weight.to(dtype=input.dtype)
                     return self._forward(input, weight, bias)
 
+            @_linear_input_act_fusable
             def forward(self, input, *args, **kwargs):
                 run_every_op()
 
