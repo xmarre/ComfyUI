@@ -1,5 +1,6 @@
 """The fused linear helper must preserve the module's adapter and hook behavior."""
 
+import functools
 import types
 
 import pytest
@@ -131,6 +132,65 @@ def test_unmodified_and_ejected_modules_keep_int8_fusion(monkeypatch):
             hook.eject()
         ops.linear_input_act(layer, x, "swiglu")
         assert calls.count("swiglu") == 2
+
+
+def _override_forward(layer, wrapped):
+    base = type(layer)
+
+    def forward(self, inputs, *args, **kwargs):
+        return super(subclass, self).forward(inputs, *args, **kwargs) + 0.5
+
+    if wrapped:
+        forward = functools.wraps(base.forward)(forward)
+    subclass = type("OverriddenLinear", (base,), {"forward": forward})
+    layer.__class__ = subclass
+    return layer
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_int8_input_activation_preserves_subclass_forward(monkeypatch, wrapped):
+    layer, x = _override_forward(_layer(), wrapped), _input()
+    calls = []
+    original = ops.quant_ops.ck.int8_linear
+
+    def fused(*args, **kwargs):
+        calls.append(kwargs.get("input_act"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(ops.quant_ops.ck, "int8_linear", fused)
+    with torch.no_grad():
+        expected = layer(ops.INPUT_ACT_EAGER["swiglu"](x))
+        actual = ops.linear_input_act(layer, x, "swiglu")
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    # The module itself may still use an INT8 GEMM, but not the fused activation.
+    assert "swiglu" not in calls
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_fp16_shortcut_preserves_subclass_forward(monkeypatch, wrapped):
+    layer = _override_forward(_layer(torch.float16, quantized=False), wrapped)
+    x = _input(torch.float16)
+    monkeypatch.setattr(ops, "_fp16_linear_wanted", lambda _x: True)
+    monkeypatch.setattr(ops.quant_ops.ck, "fp16_linear", lambda *args, **kwargs: pytest.fail("fused fp16 call"))
+    expected = layer(ops.INPUT_ACT_EAGER["swiglu"](x))
+    actual = ops.linear_input_act(layer, x, "swiglu")
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+def test_subclass_inheriting_forward_keeps_int8_fusion(monkeypatch):
+    layer, x = _layer(), _input()
+    layer.__class__ = type("InheritedLinear", (type(layer),), {})
+    calls = []
+    original = ops.quant_ops.ck.int8_linear
+
+    def fused(*args, **kwargs):
+        calls.append(kwargs["input_act"])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(ops.quant_ops.ck, "int8_linear", fused)
+    with torch.no_grad():
+        ops.linear_input_act(layer, x, "swiglu")
+    assert calls == ["swiglu"]
 
 
 def test_fp16_shortcut_preserves_custom_forward_and_residual(monkeypatch):
